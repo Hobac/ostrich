@@ -32,10 +32,10 @@
 
 package ostrich.automata.afa2.concrete
 
-import ostrich.automata.afa2.{Left, Right, StepTransition, Transition}
+import ostrich.automata.afa2.{Left, Right, Step, StepTransition}
 
 import scala.collection.mutable
-import scala.collection.mutable.{ArrayBuffer, HashSet => MHashSet}
+import scala.collection.mutable.{HashSet => MHashSet}
 
 /*
  * Existential nondeterminism is implemented by having multiple
@@ -336,14 +336,19 @@ case class AFA2(initialStates : Seq[Int],
   /*
    * Reduces the size of the automaton using a partition refinement procedure,
    * that is similar to the hopcroft algorithm for DFAs.
-   * We sort states into equivalence classes based on their outgoig transition behavior.
-   * A formalization and a correctness proof can be found in chapter 5.2 of the Bachelor's Thesis
+   * We sort states into equivalence classes based on their outgoing transition behavior.
+   * A formalization and a correctness proof can be found in chapter 5.2 of the bachelor's thesis
    * "Optimized Methods for Translating Two-Way
    * Alternating Automata to One-Way
    * Non-Deterministic Automata" by Henrik Oback, 2442473
-   * available at the "University Library of Regensburg"
+   * available at the "University Library of Regensburg".
    */
   def partitionRefinement() : AFA2 = {
+    // label / left or right / target
+    type TransitionSignature = (Int, Step, Set[Int])
+    // last partition and set of all transition signatures
+    type Signature = (Int, Set[TransitionSignature])
+
     // map every state to its partition number
     var partitions = mutable.HashMap[Int, Int]()
 
@@ -357,12 +362,11 @@ case class AFA2(initialStates : Seq[Int],
       }
     }
 
-    // get the signature of a state, the outgoing transitions/reached partitions
-    def transitionSignature(state: Int) = {
+    def getSignature(state: Int) : Signature = {
       val outgoingTransitions = transitions.getOrElse(state, Seq())
 
-      // iterate the outgoing transitions and yield their signatures
-      val signature = for (transition <- outgoingTransitions) yield {
+      // iterate the outgoing transitions and yield their transition signatures
+      val transitionSignatures = for (transition <- outgoingTransitions) yield {
         var targetPartitions = Set[Int]()
         for (target <- transition.targets) {
           targetPartitions += partitions(target)
@@ -373,16 +377,66 @@ case class AFA2(initialStates : Seq[Int],
         (transition.label, transition.step, targetPartitions)
       }
 
-      // convert to set since duplicate entries should not afffect the signature
-      signature.toSet
+      // convert to set since duplicate entries should not affect the signature
+      (partitions(state), transitionSignatures.toSet)
     }
 
     // iterate until the last refinement is the same as the current one
-    while(true) {
+    var changed = true
+    while(changed) {
 
+      // get the signature of every state
+      var allSignatures = mutable.HashMap[Int, Signature]()
+      for (state <- states) {
+        allSignatures += ((state, getSignature(state)))
+      }
 
+      // assign a partition number to every unique signature
+      val signatureToPartition = mutable.HashMap[Signature, Int]()
+      var nextPartition = 0
+      for ((_, signature) <- allSignatures) {
+        if (!signatureToPartition.contains(signature)) {
+          signatureToPartition += (signature, nextPartition)
+          nextPartition += 1
+        }
+      }
+
+      // map every state to the partition number of its signature
+      val newPartitions = mutable.HashMap[Int, Int]()
+      for ((state, signature) <- allSignatures) {
+        newPartitions += ((state, signatureToPartition(signature)))
+      }
+
+      if (newPartitions == partitions) {
+        changed = false
+      } else {
+        partitions = newPartitions
+      }
     }
 
+    // finally map the states to their partition
+    val newInitialStates = initialStates.map(partitions).distinct
+    val newFinalStates = finalStates.map(partitions).distinct
+    val newTransitions = mutable.HashMap[Int, Seq[StepTransition]]()
+
+    for ((source, outgoing) <- transitions) {
+      val newSource = partitions(source)
+
+      val mappedTransitions = for (transition <- outgoing) yield {
+        StepTransition(
+          transition.label,
+          transition.step,
+          transition.targets.map(partitions)
+        )
+      }
+
+      // add mapped transitions to the ones that were already mapped
+      val buffer = newTransitions.getOrElse(newSource, Seq())
+      newTransitions(newSource) = (buffer ++ mappedTransitions).distinct
+    }
+
+    // return the reduced automaton
+    AFA2(newInitialStates, newFinalStates, newTransitions.toMap)
   }
 
   /*
