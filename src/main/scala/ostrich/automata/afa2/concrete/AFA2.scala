@@ -333,9 +333,61 @@ case class AFA2(initialStates : Seq[Int],
 
   }
 
-/*
- * Eliminates non-forward reachable and non-backward reachable states.
- */
+  /*
+   * Reduces the size of the automaton using a partition refinement procedure,
+   * that is similar to the hopcroft algorithm for DFAs.
+   * We sort states into equivalence classes based on their outgoig transition behavior.
+   * A formalization and a correctness proof can be found in chapter 5.2 of the Bachelor's Thesis
+   * "Optimized Methods for Translating Two-Way
+   * Alternating Automata to One-Way
+   * Non-Deterministic Automata" by Henrik Oback, 2442473
+   * available at the "University Library of Regensburg"
+   */
+  def partitionRefinement() : AFA2 = {
+    // map every state to its partition number
+    var partitions = mutable.HashMap[Int, Int]()
+
+    // initial partition final/non-final states
+    for (state <- finalStates) {
+      partitions += ((state, 0))
+    }
+    for (state <- states) {
+      if (!finalStates.contains(state)) {
+        partitions += ((state, 1))
+      }
+    }
+
+    // get the signature of a state, the outgoing transitions/reached partitions
+    def transitionSignature(state: Int) = {
+      val outgoingTransitions = transitions.getOrElse(state, Seq())
+
+      // iterate the outgoing transitions and yield their signatures
+      val signature = for (transition <- outgoingTransitions) yield {
+        var targetPartitions = Set[Int]()
+        for (target <- transition.targets) {
+          targetPartitions += partitions(target)
+        }
+
+        // consumed symbol / right or left step / reached partitions
+        // there can be multible partitions reached by one transition due to universal branching
+        (transition.label, transition.step, targetPartitions)
+      }
+
+      // convert to set since duplicate entries should not afffect the signature
+      signature.toSet
+    }
+
+    // iterate until the last refinement is the same as the current one
+    while(true) {
+
+
+    }
+
+  }
+
+  /*
+   * Eliminates non-forward reachable and non-backward reachable states.
+   */
   def restrictToReachableStates : AFA2 =
     if (reachableStates.size == states.size) {
       this
