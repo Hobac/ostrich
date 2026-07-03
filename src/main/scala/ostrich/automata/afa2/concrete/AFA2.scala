@@ -396,7 +396,7 @@ case class AFA2(initialStates : Seq[Int],
       var nextPartition = 0
       for ((_, signature) <- allSignatures) {
         if (!signatureToPartition.contains(signature)) {
-          signatureToPartition += (signature, nextPartition)
+          signatureToPartition += ((signature, nextPartition))
           nextPartition += 1
         }
       }

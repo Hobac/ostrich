@@ -484,8 +484,10 @@ class Regex2Aut(theory : OstrichStringTheory) {
     be merged anymore. Output: 2AFA (concrete, only accepts at the end
     of word)
      */
-    //println("Eliminating redundant states in progress...")
-    val redConcAut = concAut.minimizeStates()
+    println("Eliminating redundant states in progress...")
+    println("States before:" + concAut.states.size)
+    val redConcAut = concAut.partitionRefinement()
+    println("States after:" + redConcAut.states.size)
     //val redConcAut = concAut
     //println("Total time for regex -> 2AFA translation: " + duration)
     if (debug)
