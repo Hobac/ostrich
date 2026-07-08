@@ -436,7 +436,7 @@ case class AFA2(initialStates : Seq[Int],
     }
 
     // return the reduced automaton
-    AFA2(newInitialStates, newFinalStates, newTransitions.toMap)
+    AFA2(newInitialStates, newFinalStates, newTransitions.toMap).restrictToReachableStates
   }
 
   /*

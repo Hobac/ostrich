@@ -4,77 +4,78 @@ import ostrich.automata.afa2.{Right, Left, StepTransition}
 import org.scalacheck.Properties
 
 object AFA2OptimizationTest extends Properties("AFA2") {
-
   // get a random 2AFA
-  // we build a automaton that is allready categorized
-  // we do this by only using right-transitions
-  // this also avoids looping
-  // also initial states ony have outgoing transitions
-  // and final states only incoming ones
-  private def randomAFA2(seed: Long, stateCount: Int = 20,
-  alphabet: IndexedSeq[Int] = Vector('a'.toInt, 'b'.toInt),
-  maxTargetCount: Int = 4, universalProbability: Double = 0.2): AFA2 = {
+  // we only use right-transitions
+  // this avoids looping
+  // initial states only have outgoing transitions
+  // final states only incoming ones
+  // so that StateDuplicator does not have any issues
+  private def randomAFA2(
+                          seed: Long,
+                          stateCount: Int = 8,
+                          alphabet: IndexedSeq[Int] = Vector('a'.toInt, 'b'.toInt),
+                          maxTargetCount: Int = 2,
+                          universalProbability: Double = 0.2
+                        ): AFA2 = {
 
     val random = new scala.util.Random(seed)
-    val states = Seq.range(0, stateCount)
 
-    // first state is the initial state
     val initialState = 0
-    val initialStates = Seq(initialState)
-
-    // last state is the final state
-    // NFA translator seems to struggle if it has outgoing transitions
     val finalState = stateCount - 1
+
+    val initialStates = Seq(initialState)
     val finalStates = Seq(finalState)
 
-    // get random transitions
     var transitions = Map[Int, Seq[StepTransition]]()
 
-    // iterate all states and labels
-    for (state <- states) {
-      // skip initial and final
-      if (state != finalState && state != initialState)
-      {
-        var outgoing = Seq[StepTransition]()
+    for (state <- 0 until finalState) {
+      var outgoingTransitions = Seq[StepTransition]()
 
-        for (label <- alphabet) {
-          val targets = randomTargets(random, stateCount, maxTargetCount, universalProbability)
-          outgoing = outgoing :+ StepTransition(label, Right, targets)
-        }
+      for (label <- alphabet) {
+        val targets =
+          randomForwardTargets(
+            random = random,
+            currentState = state,
+            finalState = finalState,
+            maxTargetCount = maxTargetCount,
+            universalProbability = universalProbability
+          )
 
-        transitions = transitions + (state -> outgoing)
+        val transition = StepTransition(label, Right, targets)
+        outgoingTransitions = outgoingTransitions :+ transition
       }
+
+      transitions = transitions + (state -> outgoingTransitions)
     }
-
-    // force initial state to enter the automaton
-    transitions = transitions + (
-      initialState -> Seq(
-        StepTransition('a'.toInt, Right, Seq(1)),
-        StepTransition('b'.toInt, Right, Seq(1))))
-
-    // force the state before final to reach final
-    val stateBeforeFinal = stateCount - 2
-    transitions = transitions + (
-      stateBeforeFinal -> Seq(
-        StepTransition('a'.toInt, Right, Seq(finalState)),
-        StepTransition('b'.toInt, Right, Seq(finalState))))
 
     AFA2(initialStates, finalStates, transitions)
   }
 
-  private def randomTargets(random: scala.util.Random, stateCount: Int,
-  maxTargetCount: Int, universalProbability: Double): Seq[Int] = {
-    // one target / existential transition
+  private def randomForwardTargets(
+                                    random: scala.util.Random,
+                                    currentState: Int,
+                                    finalState: Int,
+                                    maxTargetCount: Int,
+                                    universalProbability: Double
+                                  ): Seq[Int] = {
+
+    val firstPossibleTarget = currentState + 1
+    val possibleTargets = firstPossibleTarget to finalState
     var targetCount = 1
 
-    // universal branching
     if (random.nextDouble() < universalProbability) {
       targetCount = 2 + random.nextInt(maxTargetCount - 1)
     }
 
+    if (targetCount > possibleTargets.size) {
+      targetCount = possibleTargets.size
+    }
+
     var targets = Seq[Int]()
+
     while (targets.size < targetCount) {
-      val target = random.nextInt(stateCount)
+      val randomIndex = random.nextInt(possibleTargets.size)
+      val target = possibleTargets(randomIndex)
 
       if (!targets.contains(target)) {
         targets = targets :+ target
@@ -152,26 +153,19 @@ object AFA2OptimizationTest extends Properties("AFA2") {
       afterMinusBefore.isEmpty
   }
 
-  // TODO: This test shows that not any 2AFA can be tranfomed to a S2AFA by AFA2StateDuplicator
-  // TODO: This makes all optimizations dangerous, I have to adjust the translation
-  // TODO: Maybe partition refinement also produces a inlvaid 2AFA somehow? I have to check
-  property("partitionRefinement preserves language (100 random automata)") = {
+  // TODO: Make sure that partition refinement does not produce an automaton that can not be categorized
+  // TODO: If that can not be ensured, then adjust StateDuplicator for the edge cases
+  property("partitionRefinement preserves language (1000 random automata)") = {
     var allEquivalent = true
     var seed = 0L
 
-    println("Starting loop...")
-    while (seed < 100L && allEquivalent) {
+    while (seed < 1000L && allEquivalent) {
       val aut = randomAFA2(seed)
       val reduced = aut.partitionRefinement()
 
-      println("Got both automata, now translating them to NFAs...")
-      val beforeNFA =
-        NFATranslator(AFA2StateDuplicator(aut), null)
+      val beforeNFA = NFATranslator(AFA2StateDuplicator(aut), null)
+      val afterNFA = NFATranslator(AFA2StateDuplicator(reduced), null)
 
-      val afterNFA =
-        NFATranslator(AFA2StateDuplicator(reduced), null)
-
-      println("Got the NFAs, now checking...")
       val beforeMinusAfter = beforeNFA & !afterNFA
       val afterMinusBefore = afterNFA & !beforeNFA
 
@@ -188,9 +182,66 @@ object AFA2OptimizationTest extends Properties("AFA2") {
       }
 
       seed = seed + 1L
-      println(seed + "/100 checked")
     }
 
     allEquivalent
+  }
+
+  property("compare minimizeStates and partitionRefinement on 1000 random automata") = {
+    val automataCount = 1000L
+
+    var seed = 0L
+
+    var totalOriginalStates = 0
+    var totalMinimizedStates = 0
+    var totalPartitionRefinedStates = 0
+    var partitionRefinementBetter = 0
+    var minimizeStatesBetter = 0
+    var bothSame = 0
+
+    while (seed < automataCount) {
+      val automaton = randomAFA2(seed)
+
+      val minimizedAutomaton = automaton.minimizeStates()
+      val partitionRefinedAutomaton = automaton.partitionRefinement()
+
+      val originalStateCount = automaton.states.size
+      val minimizedStateCount = minimizedAutomaton.states.size
+      val partitionRefinedStateCount = partitionRefinedAutomaton.states.size
+
+      totalOriginalStates = totalOriginalStates + originalStateCount
+      totalMinimizedStates = totalMinimizedStates + minimizedStateCount
+      totalPartitionRefinedStates = totalPartitionRefinedStates + partitionRefinedStateCount
+
+      if (partitionRefinedStateCount < minimizedStateCount) {
+        partitionRefinementBetter = partitionRefinementBetter + 1
+      } else if (minimizedStateCount < partitionRefinedStateCount) {
+        minimizeStatesBetter = minimizeStatesBetter + 1
+      } else {
+        bothSame = bothSame + 1
+      }
+
+      seed = seed + 1L
+    }
+
+    val minimizeStatesReduction =
+      100.0 - (totalMinimizedStates.toDouble * 100.0 / totalOriginalStates.toDouble)
+
+    val partitionRefinementReduction =
+      100.0 - (totalPartitionRefinedStates.toDouble * 100.0 / totalOriginalStates.toDouble)
+
+    println("Compared " + automataCount + " random automata")
+    println("Original total states: " + totalOriginalStates)
+    println("minimizeStates total states: " + totalMinimizedStates)
+    println("partitionRefinement total states: " + totalPartitionRefinedStates)
+
+    println("minimizeStates reduction: " + minimizeStatesReduction + "%")
+    println("partitionRefinement reduction: " + partitionRefinementReduction + "%")
+
+    println("partitionRefinement produced smaller automata in " + partitionRefinementBetter + " cases")
+    println("minimizeStates produced smaller automata in " + minimizeStatesBetter + " cases")
+    println("Both produced same-size automata in " + bothSame + " cases")
+
+    partitionRefinementReduction >= 0.0
   }
 }
