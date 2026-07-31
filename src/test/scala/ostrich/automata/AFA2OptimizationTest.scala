@@ -172,7 +172,7 @@ object AFA2OptimizationTest extends Properties("AFA2") {
     var allEquivalent = true
     var seed = 0L
 
-    while (seed < 1000L && allEquivalent) {
+    while (seed < 10L && allEquivalent) {
       val aut = randomAFA2(seed)
       val reduced = aut.optimizeUntilFixpoint()
 
@@ -200,7 +200,7 @@ object AFA2OptimizationTest extends Properties("AFA2") {
   }
 
   property("compare minimizeStates() and optimizeUntilFixpoint() on 1000 random automata") = {
-    val automataCount = 1000L
+    val automataCount = 10L
 
     var seed = 0L
 

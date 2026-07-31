@@ -336,153 +336,118 @@ case class AFA2(initialStates : Seq[Int],
 
   def optimizeUntilFixpoint() : AFA2 = {
     var oldAut = this.restrictToReachableStates
-    var newAut = oldAut.dominatedStateCheck().partitionRefinement()
+    var newAut = oldAut.partitionRefinement().dominatedStateCheck()
 
     while (newAut.states.size != oldAut.states.size) {
       oldAut = newAut
-      newAut = oldAut.dominatedStateCheck().partitionRefinement()
+      newAut = oldAut.partitionRefinement().dominatedStateCheck()
     }
 
     newAut
   }
 
-  // TODO: Finish this
   private  def dominatedStateCheck() : AFA2 = {
-    // label, direction and now active states
-    type Move = (Int, Step, Seq[Int])
-    // a sequence of moves, the set of active states
-    // of the final move is currently active
-    type Path = Seq[Seq[Move]]
-
-    def getActiveStates(path: Path): Seq[Int] = {
-      path.last.flatMap(move => move._3)
-    }
-
-    def getAllPaths(start: Int, n: Int): Seq[Path] = {
-      def getPossibleMovesFromActiveState(state: Int): Seq[Move] = {
-        var moves = Seq[Move]()
-        for (element <- transitions(state)) {
-          moves :+ (element.label, element.step, element.targets)
-        }
-        moves
-      }
-
-      // TODO: Check if the cartesian product is calculated correctly
-      def getMoveCombinations(activeStates: Seq[Int]): Seq[Seq[Move]] = {
-        // no active states -> no combinations
-        if (activeStates.isEmpty) {
-          return Seq()
-        }
-
-        // each possible move of the first active state starts one combination
-        var combinations = Seq[Seq[Move]]()
-        for (move <- getPossibleMovesFromActiveState(activeStates.head)) {
-          combinations = combinations :+ Seq(move)
-        }
-
-        // extend every combination with every possible move
-        // of the remaining active states
-        for (i <- 1 until activeStates.size) {
-          val state = activeStates(i)
-          var newCombinations = Seq[Seq[Move]]()
-
-          for (combination <- combinations) {
-            for (move <- getPossibleMovesFromActiveState(state)) {
-              newCombinations = newCombinations :+ (combination :+ move)
-            }
-          }
-
-          combinations = newCombinations
-        }
-
-        combinations
-      }
-
-      // each possible initial move forms one path with one step
-      var paths = Seq[Path]()
-      for (move <- getPossibleMovesFromActiveState(start)) {
-        paths = paths :+ Seq(Seq(move))
-      }
-
-      // extend the paths by at most n additional steps.
-      for (_ <- 0 until n) {
-        var newPaths = Seq[Path]()
-
-        for (path <- paths) {
-          val activeStates = getActiveStates(path)
-          for (nextStep <- getMoveCombinations(activeStates)) {
-            newPaths = newPaths :+ (path :+ nextStep)
-          }
-        }
-
-        paths = newPaths
-      }
-
-      paths
-    }
-
     def sameIncomingBehavior(a: Int, b: Int): Boolean = {
+      for (transitionA <- transitions(a)) {
+        for (transitionB <- transitions(b)) {
 
-    }
+          val existentialTransitions = transitionA.targets.size == 1 && transitionB.targets.size == 1
+          val reachesA = transitionA.targets.contains(a)
+          val reachesB = transitionB.targets.contains(b)
+          val sameLabel = transitionA.label == transitionB.label
+          val sameStep = transitionA.step == transitionB.step
 
-    // checks if the transition behavior of a covers that of b
-    // returns all paths that are redundant
-    def covers(a: Int, b: Int, n: Int): Path = {
-      def pathIsSubset(pathB: Path, pathA: Path): Boolean = {
-        // every step of B must be a subset of the corresponding step of A.
-        for (i <- pathB.indices) {
-          val stepB = pathB(i).toSet
-          val stepA = pathA(i).toSet
-
-          if (!stepB.subsetOf(stepA)) {
-            false
-          }
+          return existentialTransitions && reachesA && reachesB && sameLabel && sameStep
         }
-
-
-        // both paths must reach the same active states.
-        getActiveStates(pathB).toSet == getActiveStates(pathA).toSet
       }
 
-      // Check all path lengths from 1 to n.
-      for (length <- 1 to n) {
-        val pathsFromA = getAllPaths(a, length)
-        val pathsFromB = getAllPaths(b, length)
+      false
+    }
 
-        // Every path from B must be covered by a path from A.
-        for (pathB <- pathsFromB) {
-          var matchingPathFound = false
-          for (pathA <- pathsFromA) {
-            if (pathIsSubset(pathB, pathA)) {
-              matchingPathFound = true
+    def subsetLanguage(a: Int, b: Int): Boolean = {
+      val automatonA = getAutomaton(a)
+      val automatonB = getAutomaton(b)
+
+      val nfaA = NFATranslator(AFA2StateDuplicator(automatonA), null)
+      val nfaB = NFATranslator(AFA2StateDuplicator(automatonB), null)
+
+      // a is a subset of b
+      val aMinusB = nfaA & !nfaB
+      aMinusB.isEmpty
+    }
+
+    def getAutomaton(q: Int): AFA2 = {
+      AFA2(
+        Seq(q),
+        finalStates,
+        transitions
+      ).restrictToReachableStates
+    }
+
+    def dominated(a: Int, b: Int): Boolean = {
+      sameIncomingBehavior(a, b) & subsetLanguage(a, b)
+    }
+
+    def delete(a: Int): AFA2 = {
+      val newInitialStates = initialStates.filter(_ != a)
+      val newFinalStates = finalStates.filter(_ != a)
+
+      val newTransitions = mutable.HashMap[Int, Seq[StepTransition]]()
+
+      for ((source, outgoingTransitions) <- transitions) {
+
+        if (source != a) {
+
+          var mappedTransitions = Seq[StepTransition]()
+
+          for (transition <- outgoingTransitions) {
+            val newTargets = transition.targets.filter(_ != a)
+
+            // Do not create transitions without target states.
+            if (newTargets.nonEmpty) {
+              mappedTransitions = mappedTransitions :+
+                StepTransition(
+                  transition.label,
+                  transition.step,
+                  newTargets
+                )
             }
           }
 
-          if (!matchingPathFound) {
-            return false
+          if (mappedTransitions.nonEmpty) {
+            newTransitions += ((source, mappedTransitions))
+          }
+        }
+      }
+
+      AFA2(
+        newInitialStates,
+        newFinalStates,
+        newTransitions.toMap
+      ).restrictToReachableStates
+    }
+
+    var newAutomaton = AFA2(initialStates, finalStates, transitions)
+    var deletion = true
+
+    while (deletion) {
+      deletion = false
+
+      for (a <- newAutomaton.states if !deletion) {
+        for (b <- newAutomaton.states if !deletion && a != b &&
+          !newAutomaton.initialStates.contains(a) &&
+          !newAutomaton.finalStates.contains(a) &&
+          !newAutomaton.initialStates.contains(b) &&
+          !newAutomaton.finalStates.contains(b)) {
+          if (dominated(a, b)) {
+            newAutomaton = delete(a)
+            deletion = true
           }
         }
       }
     }
 
-    def domiates(a: Int, b: Int): Boolean = {
-      true
-    }
-
-    def merge(a: Int, b: Int) = {
-
-    }
-
-    for (a <- states) {
-      for (b <- states if a != b) {
-        if(domiates(a, b))
-        {
-            merge(a, b)
-        }
-      }
-    }
-
-    this
+    newAutomaton
   }
 
   /*
