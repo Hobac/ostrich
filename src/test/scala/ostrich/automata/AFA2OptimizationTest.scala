@@ -3,18 +3,23 @@ package ostrich.automata.afa2.concrete
 import ostrich.automata.afa2.{Right, Left, StepTransition}
 import org.scalacheck.Properties
 
+import ostrich.{ECMARegexParser, OFlags, OstrichStringTheory}
+import ostrich.automata.{ECMAToSymbAFA2, Regex2Aut}
+import ostrich.automata.afa2.symbolic.{SymbEpsReducer, SymbToConcTranslator}
+
 object AFA2OptimizationTest extends Properties("AFA2") {
   // get a random 2AFA
   // we only use right-transitions
   // this avoids looping
-  // initial states only have outgoing transitions
-  // final states only incoming ones
+  // the initial state only has outgoing transitions
+  // the final state only incoming ones
   // so that StateDuplicator does not have any issues
+  // we also remove all non-reachable state so that StateDuplicator does not have any issues
   private def randomAFA2(
                           seed: Long,
-                          stateCount: Int = 8,
-                          alphabet: IndexedSeq[Int] = Vector('a'.toInt, 'b'.toInt),
-                          maxTargetCount: Int = 2,
+                          stateCount: Int = 50,
+                          alphabet: IndexedSeq[Int] = Vector('a'.toInt, 'b'.toInt, 'c'.toInt),
+                          maxTargetCount: Int = 3,
                           universalProbability: Double = 0.2
                         ): AFA2 = {
 
@@ -28,27 +33,41 @@ object AFA2OptimizationTest extends Properties("AFA2") {
 
     var transitions = Map[Int, Seq[StepTransition]]()
 
+    // get random transitions
     for (state <- 0 until finalState) {
       var outgoingTransitions = Seq[StepTransition]()
 
-      for (label <- alphabet) {
-        val targets =
-          randomForwardTargets(
-            random = random,
-            currentState = state,
-            finalState = finalState,
-            maxTargetCount = maxTargetCount,
-            universalProbability = universalProbability
-          )
+      var attempt = 0
+      while (attempt < 5) {
+        if (random.nextDouble() <= 0.5) {
+          val label = alphabet(random.nextInt(alphabet.size))
 
-        val transition = StepTransition(label, Right, targets)
+          val targets =
+            randomForwardTargets(
+              random = random,
+              currentState = state,
+              finalState = finalState,
+              maxTargetCount = maxTargetCount,
+              universalProbability = universalProbability
+            )
+
+          val transition = StepTransition(label, Right, targets)
+          outgoingTransitions = outgoingTransitions :+ transition
+        }
+
+        attempt += 1
+      }
+
+      // at least one outgoing transition is needed
+      if (outgoingTransitions.isEmpty) {
+        val transition = StepTransition('a'.toInt, Right, Seq(state + 1))
         outgoingTransitions = outgoingTransitions :+ transition
       }
 
       transitions = transitions + (state -> outgoingTransitions)
     }
 
-    AFA2(initialStates, finalStates, transitions)
+    AFA2(initialStates, finalStates, transitions).restrictToReachableStates
   }
 
   private def randomForwardTargets(
@@ -85,7 +104,7 @@ object AFA2OptimizationTest extends Properties("AFA2") {
     targets
   }
 
-  property("partitionRefinement preserves language (hand crafted test)") = {
+  property("optimizeUntilFixpoint() preserves language (hand crafted test)") = {
     val aut = AFA2(
       initialStates = Seq(0),
       finalStates = Seq(9),
@@ -137,13 +156,9 @@ object AFA2OptimizationTest extends Properties("AFA2") {
       )
     )
 
-    val reduced = aut.partitionRefinement()
-
-    val beforeNFA =
-      NFATranslator(AFA2StateDuplicator(aut), null)
-
-    val afterNFA =
-      NFATranslator(AFA2StateDuplicator(reduced), null)
+    val reduced = aut.optimizeUntilFixpoint()
+    val beforeNFA = NFATranslator(AFA2StateDuplicator(aut), null)
+    val afterNFA = NFATranslator(AFA2StateDuplicator(reduced), null)
 
     val beforeMinusAfter = beforeNFA & !afterNFA
     val afterMinusBefore = afterNFA & !beforeNFA
@@ -153,15 +168,13 @@ object AFA2OptimizationTest extends Properties("AFA2") {
       afterMinusBefore.isEmpty
   }
 
-  // TODO: Make sure that partition refinement does not produce an automaton that can not be categorized
-  // TODO: If that can not be ensured, then adjust StateDuplicator for the edge cases
-  property("partitionRefinement preserves language (1000 random automata)") = {
+  property("optimizeUntilFixpoint() preserves language (1000 random automata)") = {
     var allEquivalent = true
     var seed = 0L
 
     while (seed < 1000L && allEquivalent) {
       val aut = randomAFA2(seed)
-      val reduced = aut.partitionRefinement()
+      val reduced = aut.optimizeUntilFixpoint()
 
       val beforeNFA = NFATranslator(AFA2StateDuplicator(aut), null)
       val afterNFA = NFATranslator(AFA2StateDuplicator(reduced), null)
@@ -169,8 +182,7 @@ object AFA2OptimizationTest extends Properties("AFA2") {
       val beforeMinusAfter = beforeNFA & !afterNFA
       val afterMinusBefore = afterNFA & !beforeNFA
 
-      val equivalent =
-        beforeMinusAfter.isEmpty && afterMinusBefore.isEmpty
+      val equivalent = beforeMinusAfter.isEmpty && afterMinusBefore.isEmpty
 
       if (!equivalent) {
         println("Counterexample seed: " + seed)
@@ -187,15 +199,15 @@ object AFA2OptimizationTest extends Properties("AFA2") {
     allEquivalent
   }
 
-  property("compare minimizeStates and partitionRefinement on 1000 random automata") = {
+  property("compare minimizeStates() and optimizeUntilFixpoint() on 1000 random automata") = {
     val automataCount = 1000L
 
     var seed = 0L
 
     var totalOriginalStates = 0
     var totalMinimizedStates = 0
-    var totalPartitionRefinedStates = 0
-    var partitionRefinementBetter = 0
+    var totalOptimizeUntilFixpointStates = 0
+    var optimizeUntilFixpointBetter = 0
     var minimizeStatesBetter = 0
     var bothSame = 0
 
@@ -203,7 +215,7 @@ object AFA2OptimizationTest extends Properties("AFA2") {
       val automaton = randomAFA2(seed)
 
       val minimizedAutomaton = automaton.minimizeStates()
-      val partitionRefinedAutomaton = automaton.partitionRefinement()
+      val partitionRefinedAutomaton = automaton.optimizeUntilFixpoint()
 
       val originalStateCount = automaton.states.size
       val minimizedStateCount = minimizedAutomaton.states.size
@@ -211,10 +223,10 @@ object AFA2OptimizationTest extends Properties("AFA2") {
 
       totalOriginalStates = totalOriginalStates + originalStateCount
       totalMinimizedStates = totalMinimizedStates + minimizedStateCount
-      totalPartitionRefinedStates = totalPartitionRefinedStates + partitionRefinedStateCount
+      totalOptimizeUntilFixpointStates = totalOptimizeUntilFixpointStates + partitionRefinedStateCount
 
       if (partitionRefinedStateCount < minimizedStateCount) {
-        partitionRefinementBetter = partitionRefinementBetter + 1
+        optimizeUntilFixpointBetter = optimizeUntilFixpointBetter + 1
       } else if (minimizedStateCount < partitionRefinedStateCount) {
         minimizeStatesBetter = minimizeStatesBetter + 1
       } else {
@@ -227,21 +239,21 @@ object AFA2OptimizationTest extends Properties("AFA2") {
     val minimizeStatesReduction =
       100.0 - (totalMinimizedStates.toDouble * 100.0 / totalOriginalStates.toDouble)
 
-    val partitionRefinementReduction =
-      100.0 - (totalPartitionRefinedStates.toDouble * 100.0 / totalOriginalStates.toDouble)
+    val optimizeUntilFixpointReduction =
+      100.0 - (totalOptimizeUntilFixpointStates.toDouble * 100.0 / totalOriginalStates.toDouble)
 
     println("Compared " + automataCount + " random automata")
     println("Original total states: " + totalOriginalStates)
     println("minimizeStates total states: " + totalMinimizedStates)
-    println("partitionRefinement total states: " + totalPartitionRefinedStates)
+    println("optimizeUntilFixpoint total states: " + totalOptimizeUntilFixpointStates)
 
     println("minimizeStates reduction: " + minimizeStatesReduction + "%")
-    println("partitionRefinement reduction: " + partitionRefinementReduction + "%")
+    println("optimizeUntilFixpoint reduction: " + optimizeUntilFixpointReduction + "%")
 
-    println("partitionRefinement produced smaller automata in " + partitionRefinementBetter + " cases")
+    println("optimizeUntilFixpoint produced smaller automata in " + optimizeUntilFixpointBetter + " cases")
     println("minimizeStates produced smaller automata in " + minimizeStatesBetter + " cases")
     println("Both produced same-size automata in " + bothSame + " cases")
 
-    partitionRefinementReduction >= 0.0
+    optimizeUntilFixpointReduction >= 0.0
   }
 }

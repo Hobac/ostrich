@@ -34,6 +34,7 @@ package ostrich.automata.afa2.concrete
 
 import ostrich.automata.afa2.{Left, Right, Step, StepTransition}
 
+import java.nio.file.Path
 import scala.collection.mutable
 import scala.collection.mutable.{HashSet => MHashSet}
 
@@ -333,6 +334,157 @@ case class AFA2(initialStates : Seq[Int],
 
   }
 
+  def optimizeUntilFixpoint() : AFA2 = {
+    var oldAut = this.restrictToReachableStates
+    var newAut = oldAut.dominatedStateCheck().partitionRefinement()
+
+    while (newAut.states.size != oldAut.states.size) {
+      oldAut = newAut
+      newAut = oldAut.dominatedStateCheck().partitionRefinement()
+    }
+
+    newAut
+  }
+
+  // TODO: Finish this
+  private  def dominatedStateCheck() : AFA2 = {
+    // label, direction and now active states
+    type Move = (Int, Step, Seq[Int])
+    // a sequence of moves, the set of active states
+    // of the final move is currently active
+    type Path = Seq[Seq[Move]]
+
+    def getActiveStates(path: Path): Seq[Int] = {
+      path.last.flatMap(move => move._3)
+    }
+
+    def getAllPaths(start: Int, n: Int): Seq[Path] = {
+      def getPossibleMovesFromActiveState(state: Int): Seq[Move] = {
+        var moves = Seq[Move]()
+        for (element <- transitions(state)) {
+          moves :+ (element.label, element.step, element.targets)
+        }
+        moves
+      }
+
+      // TODO: Check if the cartesian product is calculated correctly
+      def getMoveCombinations(activeStates: Seq[Int]): Seq[Seq[Move]] = {
+        // no active states -> no combinations
+        if (activeStates.isEmpty) {
+          return Seq()
+        }
+
+        // each possible move of the first active state starts one combination
+        var combinations = Seq[Seq[Move]]()
+        for (move <- getPossibleMovesFromActiveState(activeStates.head)) {
+          combinations = combinations :+ Seq(move)
+        }
+
+        // extend every combination with every possible move
+        // of the remaining active states
+        for (i <- 1 until activeStates.size) {
+          val state = activeStates(i)
+          var newCombinations = Seq[Seq[Move]]()
+
+          for (combination <- combinations) {
+            for (move <- getPossibleMovesFromActiveState(state)) {
+              newCombinations = newCombinations :+ (combination :+ move)
+            }
+          }
+
+          combinations = newCombinations
+        }
+
+        combinations
+      }
+
+      // each possible initial move forms one path with one step
+      var paths = Seq[Path]()
+      for (move <- getPossibleMovesFromActiveState(start)) {
+        paths = paths :+ Seq(Seq(move))
+      }
+
+      // extend the paths by at most n additional steps.
+      for (_ <- 0 until n) {
+        var newPaths = Seq[Path]()
+
+        for (path <- paths) {
+          val activeStates = getActiveStates(path)
+          for (nextStep <- getMoveCombinations(activeStates)) {
+            newPaths = newPaths :+ (path :+ nextStep)
+          }
+        }
+
+        paths = newPaths
+      }
+
+      paths
+    }
+
+    def sameIncomingBehavior(a: Int, b: Int): Boolean = {
+
+    }
+
+    // checks if the transition behavior of a covers that of b
+    // returns all paths that are redundant
+    def covers(a: Int, b: Int, n: Int): Path = {
+      def pathIsSubset(pathB: Path, pathA: Path): Boolean = {
+        // every step of B must be a subset of the corresponding step of A.
+        for (i <- pathB.indices) {
+          val stepB = pathB(i).toSet
+          val stepA = pathA(i).toSet
+
+          if (!stepB.subsetOf(stepA)) {
+            false
+          }
+        }
+
+
+        // both paths must reach the same active states.
+        getActiveStates(pathB).toSet == getActiveStates(pathA).toSet
+      }
+
+      // Check all path lengths from 1 to n.
+      for (length <- 1 to n) {
+        val pathsFromA = getAllPaths(a, length)
+        val pathsFromB = getAllPaths(b, length)
+
+        // Every path from B must be covered by a path from A.
+        for (pathB <- pathsFromB) {
+          var matchingPathFound = false
+          for (pathA <- pathsFromA) {
+            if (pathIsSubset(pathB, pathA)) {
+              matchingPathFound = true
+            }
+          }
+
+          if (!matchingPathFound) {
+            return false
+          }
+        }
+      }
+    }
+
+    def domiates(a: Int, b: Int): Boolean = {
+      true
+    }
+
+    def merge(a: Int, b: Int) = {
+
+    }
+
+    for (a <- states) {
+      for (b <- states if a != b) {
+        if(domiates(a, b))
+        {
+            merge(a, b)
+        }
+      }
+    }
+
+    this
+  }
+
   /*
    * Reduces the size of the automaton using a partition refinement procedure,
    * that is similar to the hopcroft algorithm for DFAs.
@@ -343,7 +495,7 @@ case class AFA2(initialStates : Seq[Int],
    * Non-Deterministic Automata" by Henrik Oback, 2442473
    * available at the "University Library of Regensburg".
    */
-  def partitionRefinement() : AFA2 = {
+  private def partitionRefinement() : AFA2 = {
     // label / left or right / target
     type TransitionSignature = (Int, Step, Set[Int])
     // last partition and set of all transition signatures
