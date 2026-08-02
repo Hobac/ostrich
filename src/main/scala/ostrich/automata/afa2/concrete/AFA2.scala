@@ -346,85 +346,138 @@ case class AFA2(initialStates : Seq[Int],
     newAut
   }
 
+  def getRestAutomaton(q: Int): AFA2 = {
+    AFA2(
+      Seq(q),
+      finalStates,
+      transitions
+    ).restrictToReachableStates
+  }
+
+  def merge(q: Int, p: Int): AFA2 = {
+    // replace q with p in the initial states
+    val newInitialStates = initialStates
+      .map(state => if (state == q) p else state)
+      .distinct
+
+    // replace a with b in the final states
+    val newFinalStates = finalStates
+      .map(state => if (state == q) p else state)
+      .distinct
+
+    val newTransitions = mutable.HashMap[Int, Seq[StepTransition]]()
+
+    for ((source, outgoingTransitions) <- transitions) {
+      // remove q as a source state.
+      if (source != q) {
+        var mappedTransitions = Seq[StepTransition]()
+
+        for (transition <- outgoingTransitions) {
+          // replace q with p in every target list.
+          val newTargets = transition.targets
+            .map(target => if (target == q) p else target)
+            .distinct
+
+          mappedTransitions = mappedTransitions :+
+            StepTransition(
+              transition.label,
+              transition.step,
+              newTargets
+            )
+        }
+
+        newTransitions += ((source, mappedTransitions.distinct))
+      }
+    }
+
+    AFA2(
+      newInitialStates,
+      newFinalStates,
+      newTransitions.toMap
+    ).restrictToReachableStates
+  }
+
   private  def dominatedStateCheck() : AFA2 = {
-    def sameIncomingBehavior(a: Int, b: Int): Boolean = {
-      for (transitionA <- transitions(a)) {
-        for (transitionB <- transitions(b)) {
 
-          val existentialTransitions = transitionA.targets.size == 1 && transitionB.targets.size == 1
-          val reachesA = transitionA.targets.contains(a)
-          val reachesB = transitionB.targets.contains(b)
-          val sameLabel = transitionA.label == transitionB.label
-          val sameStep = transitionA.step == transitionB.step
+    def sameIncomingBehavior(q: Int, p: Int, automaton: AFA2): Boolean = {
+      // source state, label, direction, targets
+      type IncomingTransition = (Int, Int, Step, Seq[Int])
 
-          return existentialTransitions && reachesA && reachesB && sameLabel && sameStep
+      var incomingQ = Set[IncomingTransition]()
+      var incomingP = Set[IncomingTransition]()
+
+      // collect all transitions that lead to q or p
+      for ((source, outgoingTransitions) <- automaton.transitions) {
+        for (transition <- outgoingTransitions) {
+
+          if (transition.targets.contains(q)) {
+            incomingQ += ((
+              source,
+              transition.label,
+              transition.step,
+              transition.targets
+            ))
+          }
+
+          if (transition.targets.contains(p)) {
+            incomingP += ((
+              source,
+              transition.label,
+              transition.step,
+              transition.targets
+            ))
+          }
         }
       }
 
-      false
+      // use a fresh placeholder state
+      val r = -1
+
+      var normalizedQ = Set[IncomingTransition]()
+      var normalizedP = Set[IncomingTransition]()
+
+      // replace q with r in all transitions leading to q
+      for ((source, label, step, targets) <- incomingQ) {
+        val newTargets = targets.map(target => if (target == q) r else target)
+        normalizedQ += ((source, label, step, newTargets))
+      }
+
+      // replace p with r in all transitions leading to p
+      for ((source, label, step, targets) <- incomingP) {
+        val newTargets = targets.map(target => if (target == p) r else target)
+        normalizedP += ((source, label, step, newTargets))
+      }
+
+      normalizedQ == normalizedP
     }
 
-    def subsetLanguage(a: Int, b: Int): Boolean = {
-      val automatonA = getAutomaton(a)
-      val automatonB = getAutomaton(b)
+    def subsetLanguage(q: Int, p: Int, automaton: AFA2): Boolean = {
+      // we only check rest automata with a fixed size!
+      // if they are too big just say false
+      val limit = 6
 
-      val nfaA = NFATranslator(AFA2StateDuplicator(automatonA), null)
-      val nfaB = NFATranslator(AFA2StateDuplicator(automatonB), null)
+      val automatonQ = automaton.getRestAutomaton(q)
+      if(automatonQ.states.size > limit) {
+        return false
+      }
+      val automatonP = automaton.getRestAutomaton(p)
+      if(automatonP.states.size > limit) {
+        return false
+      }
 
-      // a is a subset of b
-      val aMinusB = nfaA & !nfaB
+      val nfaQ = NFATranslator(AFA2StateDuplicator(automatonQ), null)
+      val nfaP = NFATranslator(AFA2StateDuplicator(automatonP), null)
+
+      // q is a subset of p
+      val aMinusB = nfaQ & !nfaP
       aMinusB.isEmpty
     }
 
-    def getAutomaton(q: Int): AFA2 = {
-      AFA2(
-        Seq(q),
-        finalStates,
-        transitions
-      ).restrictToReachableStates
-    }
+    def outgoingBehaviorSubset(q: Int, p: Int, automaton: AFA2): Boolean = {
+      val transitionsQ = automaton.transitions.getOrElse(q, Seq()).toSet
+      val transitionsP = automaton.transitions.getOrElse(p, Seq()).toSet
 
-    def dominated(a: Int, b: Int): Boolean = {
-      sameIncomingBehavior(a, b) & subsetLanguage(a, b)
-    }
-
-    def delete(a: Int): AFA2 = {
-      val newInitialStates = initialStates.filter(_ != a)
-      val newFinalStates = finalStates.filter(_ != a)
-
-      val newTransitions = mutable.HashMap[Int, Seq[StepTransition]]()
-
-      for ((source, outgoingTransitions) <- transitions) {
-
-        if (source != a) {
-
-          var mappedTransitions = Seq[StepTransition]()
-
-          for (transition <- outgoingTransitions) {
-            val newTargets = transition.targets.filter(_ != a)
-
-            // Do not create transitions without target states.
-            if (newTargets.nonEmpty) {
-              mappedTransitions = mappedTransitions :+
-                StepTransition(
-                  transition.label,
-                  transition.step,
-                  newTargets
-                )
-            }
-          }
-
-          if (mappedTransitions.nonEmpty) {
-            newTransitions += ((source, mappedTransitions))
-          }
-        }
-      }
-
-      AFA2(
-        newInitialStates,
-        newFinalStates,
-        newTransitions.toMap
-      ).restrictToReachableStates
+      transitionsQ.subsetOf(transitionsP)
     }
 
     var newAutomaton = AFA2(initialStates, finalStates, transitions)
@@ -433,15 +486,33 @@ case class AFA2(initialStates : Seq[Int],
     while (deletion) {
       deletion = false
 
-      for (a <- newAutomaton.states if !deletion) {
-        for (b <- newAutomaton.states if !deletion && a != b &&
-          !newAutomaton.initialStates.contains(a) &&
-          !newAutomaton.finalStates.contains(a) &&
-          !newAutomaton.initialStates.contains(b) &&
-          !newAutomaton.finalStates.contains(b)) {
-          if (dominated(a, b)) {
-            newAutomaton = delete(a)
+      for (q <- newAutomaton.states if !deletion) {
+        for (p <- newAutomaton.states if !deletion && q != p &&
+          !newAutomaton.initialStates.contains(q) &&
+          !newAutomaton.finalStates.contains(q) &&
+          !newAutomaton.initialStates.contains(p) &&
+          !newAutomaton.finalStates.contains(p)) {
+
+          val same_incoming_behavior = sameIncomingBehavior(q, p, newAutomaton)
+          if(same_incoming_behavior && outgoingBehaviorSubset(q, p, newAutomaton)) {
+            newAutomaton = newAutomaton.merge(q, p)
             deletion = true
+          }
+
+          if(!deletion) {
+            val q_subset_p = subsetLanguage(q, p, newAutomaton)
+            if(q_subset_p && same_incoming_behavior) {
+              newAutomaton = newAutomaton.merge(q, p)
+              deletion = true
+            }
+
+            if(!deletion && q_subset_p) {
+              val p_subset_q = subsetLanguage(p, q, newAutomaton)
+              if(p_subset_q) {
+                newAutomaton = newAutomaton.merge(q, p)
+                deletion = true
+              }
+            }
           }
         }
       }
