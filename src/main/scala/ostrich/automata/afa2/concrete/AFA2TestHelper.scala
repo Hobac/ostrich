@@ -1,5 +1,8 @@
 package ostrich.automata.afa2.concrete
 
+import ostrich.automata.afa2.symbolic.{SymbEpsReducer, SymbToConcTranslator}
+import ostrich.automata.{ECMAToSymbAFA2, Regex2Aut}
+import ostrich.{ECMARegexParser, OFlags, OstrichStringTheory}
 import ostrich.automata.afa2.{Right, StepTransition}
 
 object AFA2TestHelper  {
@@ -176,4 +179,40 @@ object AFA2TestHelper  {
     "(\\d{4}-\\d{2}-\\d{2})"
   )
 
+  // TODO: Check if this is correct
+  def ecmaRegexToConcreteAFA2(regex: String): AFA2 = {
+    val theory =
+      new OstrichStringTheory(
+        Seq(),
+        OFlags(regexTranslator = OFlags.RegexTranslator.Complete)
+      )
+
+    val parser = new ECMARegexParser(theory)
+
+    val exactRegexTerm =
+      parser.string2TermExact(regex)
+
+    val syntacticTransformations =
+      new Regex2Aut.SyntacticTransformations(theory, parser)
+
+    val normalizedRegexTerm =
+      syntacticTransformations(exactRegexTerm)
+
+    val ecmaToAFA =
+      new ECMAToSymbAFA2(theory, parser)
+
+    val extendedSymbolicAFA =
+      ecmaToAFA.toSymbExt2AFA(normalizedRegexTerm)
+
+    val epsReducer =
+      new SymbEpsReducer(theory, extendedSymbolicAFA)
+
+    val symbolicAFA =
+      epsReducer.afa
+
+    val concreteTranslator =
+      new SymbToConcTranslator(symbolicAFA)
+
+    concreteTranslator.forth().restrictToReachableStates
+  }
 }

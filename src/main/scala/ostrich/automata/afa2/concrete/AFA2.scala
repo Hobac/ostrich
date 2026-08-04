@@ -397,6 +397,12 @@ case class AFA2(initialStates : Seq[Int],
     ).restrictToReachableStates
   }
 
+  def isOneWay: Boolean = {
+    transitions.values
+      .flatten
+      .forall(_.step == Right)
+  }
+
   // TODO: Do a performance comparison, only part. ref. + duplicator or general opt. + expander
   private  def dominatedStateCheck() : AFA2 = {
 
@@ -466,8 +472,9 @@ case class AFA2(initialStates : Seq[Int],
         return false
       }
 
-      val nfaQ = NFATranslator(AFA2StateDuplicator(automatonQ), null)
-      val nfaP = NFATranslator(AFA2StateDuplicator(automatonP), null)
+      // TODO: Check why Expander breaks correctness and Duplicator does not!
+      val nfaQ = NFATranslator(AFA2StateExpander(automatonQ), null)
+      val nfaP = NFATranslator(AFA2StateExpander(automatonP), null)
 
       // q is a subset of p
       val aMinusB = nfaQ & !nfaP
@@ -500,7 +507,7 @@ case class AFA2(initialStates : Seq[Int],
             deletion = true
           }
 
-          if(!deletion) {
+          if(!deletion && newAutomaton.isOneWay) {
             val q_subset_p = subsetLanguage(q, p, newAutomaton)
             if(q_subset_p && same_incoming_behavior) {
               newAutomaton = newAutomaton.merge(q, p)

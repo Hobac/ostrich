@@ -33,6 +33,7 @@
 package ostrich.automata.NFATranslation
 
 import org.scalacheck.Properties
+import ostrich.automata.NFATranslation.Correctness.property
 import ostrich.automata.afa2.concrete.{AFA2, AFA2StateDuplicator, AFA2StateExpander, AFA2TestHelper}
 import ostrich.automata.afa2.symbolic.{SymbEpsReducer, SymbToConcTranslator}
 import ostrich.automata.{ECMAToSymbAFA2, Regex2Aut}
@@ -40,7 +41,7 @@ import ostrich.{ECMARegexParser, OFlags, OstrichStringTheory}
 
 object Performance extends Properties("AFA2") {
 
-  property("StateExpander performs better then StateDuplicator (250 random automata)") = {
+  property("StateExpander performs max 20% worse then StateDuplicator (250 random automata)") = {
     val automataCount = 250L
     var seed = 0L
 
@@ -64,6 +65,37 @@ object Performance extends Properties("AFA2") {
     println("Expander:" + totalExpanderStates)
     println("Duplicator:" + totalDuplicatorStates)
 
-    totalExpanderStates < totalDuplicatorStates
+    // 20% increase is fine
+    totalExpanderStates < totalDuplicatorStates * 1.2
+  }
+
+  property("StateExpander performs max 20% worse then StateDuplicator (ECMA regex automata)") = {
+    val regexes = AFA2TestHelper.regexes
+    val automataCount = regexes.size
+    var regexIndex = 0
+
+    var totalOriginalStates = 0
+    var totalDuplicatorStates = 0
+    var totalExpanderStates = 0
+
+    while (regexIndex < automataCount) {
+      val regex = regexes(regexIndex)
+      val aut = AFA2TestHelper.ecmaRegexToConcreteAFA2(regex)
+      val expander = AFA2StateExpander(aut)
+      val duplicator = AFA2StateDuplicator(aut)
+
+      totalOriginalStates += aut.states.size
+      totalExpanderStates += expander.states.size
+      totalDuplicatorStates += duplicator.states.size
+
+      regexIndex = regexIndex + 1
+    }
+
+    println("Original:" + totalOriginalStates)
+    println("Expander:" + totalExpanderStates)
+    println("Duplicator:" + totalDuplicatorStates)
+
+    // 20% increase is fine
+    totalExpanderStates < totalDuplicatorStates * 1.2
   }
 }

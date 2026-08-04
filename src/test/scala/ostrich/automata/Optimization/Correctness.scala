@@ -1,7 +1,7 @@
 package ostrich.automata.Optimization
 
 import org.scalacheck.Properties
-import ostrich.automata.afa2.concrete.{AFA2, AFA2StateDuplicator, AFA2TestHelper, NFATranslator}
+import ostrich.automata.afa2.concrete.{AFA2, AFA2StateDuplicator, AFA2StateExpander, AFA2TestHelper, NFATranslator}
 import ostrich.automata.afa2.{Right, StepTransition}
 
 object Correctness extends Properties("AFA2") {
@@ -59,8 +59,8 @@ object Correctness extends Properties("AFA2") {
     )
 
     val reduced = aut.optimizeUntilFixpoint()
-    val beforeNFA = NFATranslator(AFA2StateDuplicator(aut), null)
-    val afterNFA = NFATranslator(AFA2StateDuplicator(reduced), null)
+    val beforeNFA = NFATranslator(AFA2StateExpander(aut), null)
+    val afterNFA = NFATranslator(AFA2StateExpander(reduced), null)
 
     val beforeMinusAfter = beforeNFA & !afterNFA
     val afterMinusBefore = afterNFA & !beforeNFA
@@ -70,7 +70,7 @@ object Correctness extends Properties("AFA2") {
       afterMinusBefore.isEmpty
   }
 
-  property("optimizeUntilFixpoint() preserves language (250 random automata)") = {
+  property("optimizeUntilFixpoint() preserves language (100 random automata)") = {
     val automataCount = 100L
     var seed = 0L
 
@@ -79,8 +79,8 @@ object Correctness extends Properties("AFA2") {
       val aut = AFA2TestHelper.randomAFA2(seed)
       val reduced = aut.optimizeUntilFixpoint()
 
-      val beforeNFA = NFATranslator(AFA2StateDuplicator(aut), null)
-      val afterNFA = NFATranslator(AFA2StateDuplicator(reduced), null)
+      val beforeNFA = NFATranslator(AFA2StateExpander(aut), null)
+      val afterNFA = NFATranslator(AFA2StateExpander(reduced), null)
 
       val beforeMinusAfter = beforeNFA & !afterNFA
       val afterMinusBefore = afterNFA & !beforeNFA

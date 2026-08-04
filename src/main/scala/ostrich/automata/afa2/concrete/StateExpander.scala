@@ -37,7 +37,12 @@ import ostrich.automata.afa2.{Step, Left, Right, StepTransition}
 object AFA2StateExpander {
 
   def apply(aut: AFA2): AFA2 = {
-    optimize(construct(aut, aut.letters))
+    if (aut.states.toSet == aut.irStates ++ aut.llStates ++ aut.lrStates ++
+      aut.rlStates ++ aut.rrStates ++ aut.rfStates) {
+      aut
+    } else {
+      optimize(construct(aut, aut.letters))
+    }
   }
 
   def construct(aut: AFA2, alphabet: Seq[Int]): AFA2 = {
@@ -54,8 +59,7 @@ object AFA2StateExpander {
       aut.irStates ++ aut.llStates ++ aut.lrStates ++
         aut.rlStates ++ aut.rrStates ++ aut.rfStates
 
-    val statesToExpand =
-      aut.states.filter(state => !alreadyCategorizedStates.contains(state)).toSet
+    val statesToExpand = aut.states.filter(state => !alreadyCategorizedStates.contains(state)).toSet
 
     // OPTIMIZATION: Only expand the states that need to be expanded
     def isExpanded(state: Int): Boolean = {
@@ -70,10 +74,10 @@ object AFA2StateExpander {
     def rr(s: Int): Int = firstCopyState + 4 * stateToIndex(s) + 3
 
     // create fresh dummy states for simulated epsilon transitions
-    var nextFreshState = 5 * oldStates.last
+    var firstDummyState = firstCopyState + 5 * (oldStates.size + 1)
     def freshState(): Int = {
-      val state = nextFreshState
-      nextFreshState = nextFreshState + 1
+      val state = firstDummyState
+      firstDummyState = firstDummyState + 1
       state
     }
 
@@ -169,10 +173,8 @@ object AFA2StateExpander {
     }
 
     // === FINAL STATES ===
-    // create one fresh state that becomes the only final state
+    // create one fresh state that becomes a final state
     val freshFinalState = freshState()
-
-    // make the fresh state final
     newFinalStates = Seq(freshFinalState)
 
     // add a simulated epsilon transition to the fresh final state
@@ -181,15 +183,13 @@ object AFA2StateExpander {
       if (isExpanded(oldFinalState)) {
         addSecondCaseSimulatedEpsilon(ll(oldFinalState), freshFinalState)
       } else {
-        addSecondCaseSimulatedEpsilon(oldFinalState, freshFinalState)
+        newFinalStates = newFinalStates :+ oldFinalState
       }
     }
 
     // === INITIAL STATES ===
-    // create one fresh state that becomes the only initial state
+    // create one fresh state that becomes an initial state
     val freshInitialState = freshState()
-
-    // make the fresh state initial
     newInitialStates = Seq(freshInitialState)
 
     // add a simulated epsilon transition from the fresh initial state
@@ -198,7 +198,7 @@ object AFA2StateExpander {
       if (isExpanded(oldInitialState)) {
         addFirstCaseSimulatedEpsilon(freshInitialState, lr(oldInitialState))
       } else {
-        addFirstCaseSimulatedEpsilon(freshInitialState, oldInitialState)
+        newInitialStates = newInitialStates :+ oldInitialState
       }
     }
 
