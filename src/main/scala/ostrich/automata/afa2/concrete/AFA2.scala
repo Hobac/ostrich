@@ -397,6 +397,7 @@ case class AFA2(initialStates : Seq[Int],
     ).restrictToReachableStates
   }
 
+  // TODO: Do a performance comparison, only part. ref. + duplicator or general opt. + expander
   private  def dominatedStateCheck() : AFA2 = {
 
     def sameIncomingBehavior(q: Int, p: Int, automaton: AFA2): Boolean = {
