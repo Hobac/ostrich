@@ -70,8 +70,8 @@ object Correctness extends Properties("AFA2") {
       afterMinusBefore.isEmpty
   }
 
-  property("optimizeUntilFixpoint() preserves language (100 random automata)") = {
-    val automataCount = 100L
+  property("optimizeUntilFixpoint() preserves language (1000 random automata)") = {
+    val automataCount = 1000L
     var seed = 0L
 
     var allEquivalent = true

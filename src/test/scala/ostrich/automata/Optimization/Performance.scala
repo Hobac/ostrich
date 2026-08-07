@@ -35,12 +35,22 @@ package ostrich.automata.Optimization
 import org.scalacheck.Properties
 import ostrich.automata.NFATranslation.Performance.property
 import ostrich.automata.afa2.concrete.{AFA2StateDuplicator, AFA2StateExpander, AFA2TestHelper}
+import scala.io.Source
 
 object Performance extends Properties("AFA2") {
 
-  /**
-  property("StateExpander + optimizeUntilFixpoint() outperforms StateDuplicator + minimizeStates() (ECMA regex automata)") = {
-    val regexes = AFA2TestHelper.regexes.take(10)
+  property("optimizeUntilFixpoint() outperforms minimizeStates() (ECMA regex automata)") = {
+    //val regexes = AFA2TestHelper.regexes
+
+    val regexes: Seq[String] =
+      Source
+        .fromFile("patterns.csv")
+        .getLines()
+        .filter(_.nonEmpty)
+        .toSeq
+
+    println("Test regexes loaded! Count:" + regexes.size)
+
     val automataCount = regexes.size
     var regexIndex = 0
 
@@ -52,8 +62,10 @@ object Performance extends Properties("AFA2") {
       val regex = regexes(regexIndex)
       val aut = AFA2TestHelper.ecmaRegexToConcreteAFA2(regex)
 
+      println("Automaton ready! " + aut.states.size + " states")
+
       // can take any 2AFA and convert it but can lead to bigger automata
-      val expander = AFA2StateExpander(aut.optimizeUntilFixpoint())
+      val expander = AFA2StateDuplicator(aut.optimizeUntilFixpoint())
 
       // can only accept a subclass but leads to smaller automata
       val duplicator = AFA2StateDuplicator(aut.minimizeStates())
@@ -63,16 +75,17 @@ object Performance extends Properties("AFA2") {
       totalDuplicatorStates += duplicator.states.size
 
       regexIndex = regexIndex + 1
+      println(regexIndex / automataCount * 100 + "% done...")
     }
 
     println("Original:" + totalOriginalStates)
-    println("Expander:" + totalExpanderStates)
-    println("Duplicator:" + totalDuplicatorStates)
+    println("optimizeUntilFixpoint():" + totalExpanderStates + " - " + (1 - totalExpanderStates.toDouble / totalOriginalStates.toDouble) * 100 + "% reduction")
+    println("minimizeStates():" + totalDuplicatorStates + " - " + (1 - totalDuplicatorStates.toDouble / totalOriginalStates.toDouble) * 100 + "% reduction")
 
     totalExpanderStates < totalDuplicatorStates
   }
-  */
 
+  /**
   property("StateExpander + optimizeUntilFixpoint() outperforms StateDuplicator + minimizeStates() (250 random automata)") = {
     val automataCount = 250L
     var seed = 0L
@@ -157,4 +170,5 @@ object Performance extends Properties("AFA2") {
 
     optimizeUntilFixpointReduction >= 0.0
   }
+  */
 }
