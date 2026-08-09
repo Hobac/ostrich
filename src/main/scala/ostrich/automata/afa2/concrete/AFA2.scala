@@ -515,7 +515,7 @@ case class AFA2(initialStates : Seq[Int],
     def computeDominanceRelation(automaton: AFA2): Set[(Int, Int)] = {
       def pairIsLocallyValid(p: Int, q: Int): Boolean = {
         // a non-final state cannot dominate a final state
-        if (finalStates.contains(q) && !finalStates.contains(p))
+        if (automaton.finalStates.contains(q) && !automaton.finalStates.contains(p))
           return false
 
         val pTransitions = automaton.transitions.getOrElse(p, Seq.empty)
@@ -539,9 +539,6 @@ case class AFA2(initialStates : Seq[Int],
           if pairIsLocallyValid(p, q)
         } yield (p, q)
       }.toSet
-
-      println(s"Initial possible pairs: ${states.size * states.size}")
-      println(s"After local filtering:  ${relation.size}")
 
       /**
        * Checks whether a transition of p can simulate a transition of q.
@@ -600,6 +597,11 @@ case class AFA2(initialStates : Seq[Int],
         relation = newRelation
       }
 
+      println(
+        "Relevant elements in dominance relation: " +
+          relation.filter { case (p, q) => p != q }.size
+      )
+
       relation
     }
 
@@ -613,7 +615,7 @@ case class AFA2(initialStates : Seq[Int],
 
         classes :+= equivalentStates
       }
-      classes.toSet.toSeq
+      classes = classes.toSet.toSeq
 
       var stateMap = Map[Int, Int]()
       for (equivalenceClass <- classes) {
@@ -632,9 +634,17 @@ case class AFA2(initialStates : Seq[Int],
     while (deletion) {
       deletion = false
 
-      val dominance = computeDominanceRelation(newAutomaton)
+      var dominance = computeDominanceRelation(newAutomaton)
       val equivalenceClasses = computeEquivalenceClasses(newAutomaton.states, dominance)
-      newAutomaton = mapToClasses(newAutomaton, equivalenceClasses).restrictToReachableStates
+      val relevantClasses = equivalenceClasses.groupBy(_._2).count(_._2.size > 1)
+      println("Relevant equivalence classes: " + relevantClasses)
+
+      val mappedAutomaton = mapToClasses(newAutomaton, equivalenceClasses).restrictToReachableStates
+
+      // recompute if classes were found
+      if(mappedAutomaton.states.size < newAutomaton.states.size) {
+        dominance = computeDominanceRelation(newAutomaton)
+      }
 
       for ((p, q) <- dominance if !deletion && p != q && sameIncomingBehavior(q, p, newAutomaton)) {
         newAutomaton = newAutomaton.merge(q, p).restrictToReachableStates
