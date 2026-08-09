@@ -1,10 +1,10 @@
-package ostrich.automata.Optimization
+package ostrich.automata
 
 import org.scalacheck.Properties
-import ostrich.automata.afa2.concrete.{AFA2, AFA2StateDuplicator, AFA2StateExpander, AFA2TestHelper, NFATranslator}
+import ostrich.automata.afa2.concrete.{AFA2, AFA2StateExpander, AFA2TestHelper, NFATranslator}
 import ostrich.automata.afa2.{Right, StepTransition}
 
-object Correctness extends Properties("AFA2") {
+object AFA2OptimizationCorrectness extends Properties("AFA2") {
 
   property("optimizeUntilFixpoint() preserves language (hand crafted test)") = {
     val aut = AFA2(
