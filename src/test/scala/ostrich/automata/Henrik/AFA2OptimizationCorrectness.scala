@@ -1,4 +1,4 @@
-package ostrich.automata
+package ostrich.automata.Henrik
 
 import org.scalacheck.Properties
 import ostrich.automata.afa2.concrete.{AFA2, AFA2StateExpander, AFA2TestHelper, NFATranslator}

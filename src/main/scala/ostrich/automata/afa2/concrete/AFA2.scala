@@ -443,6 +443,21 @@ case class AFA2(initialStates : Seq[Int],
 
   type IncomingTransition = (Int, StepTransition)
 
+  lazy val incomingTransitions: Map[Int, Seq[IncomingTransition]] = {
+    val incoming = mutable.HashMap[Int, Seq[IncomingTransition]]()
+
+    for ((source, outgoing) <- transitions) {
+      for (transition <- outgoing) {
+        for (target <- transition.targets.distinct) {
+          val current = incoming.getOrElse(target, Seq.empty)
+          incoming(target) = current :+ (source, transition)
+        }
+      }
+    }
+
+    incoming.toMap
+  }
+
   lazy val normalizedIncomingTransitions: Map[Int, Seq[IncomingTransition]] = {
     val incoming = mutable.HashMap[Int, Seq[IncomingTransition]]()
 
