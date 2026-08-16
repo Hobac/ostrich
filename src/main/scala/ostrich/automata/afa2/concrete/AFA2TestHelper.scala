@@ -16,9 +16,9 @@ object AFA2TestHelper  {
   def randomAFA2(
                           seed: Long,
                           stateCount: Int = 50,
-                          alphabet: IndexedSeq[Int] = Vector('a'.toInt, 'b'.toInt, 'c'.toInt),
                           maxTargetCount: Int = 3,
-                          universalProbability: Double = 0.2
+                          universalProbability: Double = 0.2,
+                          alphabet: IndexedSeq[Int] = Vector('a'.toInt, 'b'.toInt, 'c'.toInt)
                         ): AFA2 = {
 
     val random = new scala.util.Random(seed)

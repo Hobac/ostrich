@@ -36,247 +36,408 @@ import ap.util.Combinatorics
 import ostrich.automata.afa2.StepTransition
 import ostrich.automata.afa2.symbolic.SymbEpsReducer
 import ostrich.automata.{AutomataUtils, BricsAutomaton, BricsAutomatonBuilder}
-import scala.collection.mutable.{MultiMap, HashMap => MHashMap, HashSet => MHashSet, Set => MSet}
-import java.util.concurrent.{ConcurrentHashMap, Executors, LinkedBlockingQueue, TimeUnit}
+
 import java.util.concurrent.atomic.AtomicInteger
-import ap.util.Combinatorics
-import ostrich.automata.afa2.{Left, Right}
-import scala.collection.mutable
+import java.util.concurrent.{ConcurrentHashMap, Executors, LinkedBlockingQueue, TimeUnit}
+import scala.collection.mutable.{MultiMap, HashMap => MHashMap, HashSet => MHashSet, Set => MSet}
 
-
-object NFAParallelTranslator {
+object NFATranslatorParallel {
   def apply(afa: AFA2): BricsAutomaton =
-    new NFAParallelTranslator(afa).result
+    new ParallelNFATranslator(afa).result
 }
 
 
-class NFAParallelTranslator(afa : AFA2) {
+class ParallelNFATranslator(afa : AFA2) {
+
+  import afa._
+  import ostrich.automata.afa2.{Left, Right, Step}
+
+  // union of categorised states
+  private val categorisedStates =
+    irStates ++ llStates ++ lrStates ++ rlStates ++ rrStates ++ rfStates
+
+  // state set and union of categorized state sets must be the same
+  assert(states.toSet == categorisedStates &&
+    states.size == irStates.size + llStates.size + lrStates.size +
+      rlStates.size + rrStates.size + rfStates.size,
+    "2AFA states cannot be classified into ir, ll, lr, rl, rr, rf. " +
+      "Problem states: " +
+      (states filterNot categorisedStates).mkString(", "))
+
+  // only one inital state
+  assert(irStates.size == 1)
+
+  assert(transitions forall {
+    case (_, ts) => ts forall {
+      case StepTransition(_, _, targets) => targets.nonEmpty
+    }},
+    "Transitions with zero target states are not supported")
+
+  // TODO: check that automaton is not looping
+  // (requires Parikh image computation)
+
   type MacroState = Set[Int]
-  case class Edge(from: MacroState, label: Int, to: MacroState)
-  case class EpsilonEdge(from: MacroState, to: MacroState)
 
-  private val numWorkers = Runtime.getRuntime.availableProcessors()
+  case class Edge(
+                   from: MacroState,
+                   label: Int,
+                   to: MacroState
+                 )
 
-  // All macro states that have already been discovered.
-  private val discovered = ConcurrentHashMap.newKeySet[MacroState]()
-  private val edges = ConcurrentHashMap.newKeySet[Edge]()
-  private val epsilonEdges = ConcurrentHashMap.newKeySet[EpsilonEdge]()
+  case class EpsilonEdge(
+                          from: MacroState,
+                          to: MacroState
+                        )
 
-  // Macro states that still need to be expanded.
-  private val workQueue = new LinkedBlockingQueue[MacroState]()
+  val xrStates = irStates ++ rrStates ++ lrStates
+  val xlStates = llStates ++ rlStates
+  val rxStates = rfStates ++ rrStates ++ rlStates
+  val lxStates = llStates ++ lrStates
 
-  val xrStates = afa.irStates ++ afa.rrStates ++ afa.lrStates
-  val xlStates = afa.llStates ++ afa.rlStates
-  val rxStates = afa.rfStates ++ afa.rrStates ++ afa.rlStates
-  val lxStates = afa.llStates ++ afa.lrStates
 
-  val stateRoles: Map[Int, String] =
-    (afa.irStates.map(_ -> "ir") ++
-      afa.rrStates.map(_ -> "rr") ++
-      afa.rlStates.map(_ -> "rl") ++
-      afa.lrStates.map(_ -> "lr") ++
-      afa.llStates.map(_ -> "ll") ++
-      afa.rfStates.map(_ -> "rf")).toMap
+  def outgoing(state : Int, l : Int) : Seq[(Step, Seq[Int])] =
+    for (StepTransition(`l`, step, ts) <- transitions.getOrElse(state, List())) yield {
+      (step, ts)
+    }
 
-  val outgoingTransitions: Map[Int, Seq[StepTransition]] =
-    afa.transitions
-
-  val incomingTransitions: Map[Int, Seq[(Int, StepTransition)]] =
-    afa.incomingTransitions
-
-  /**
-   * Add a state to the work queue if it has not been discovered before.
-   */
-  private def schedule(state: MacroState) = {
-    if (discovered.add(state)) {
-      workQueue.put(state)
+  def existsGoingLeft(ts : Seq[(Step, Seq[Int])],
+                      f : Seq[Int] => Boolean) : Boolean = {
+    ts exists {
+      case (Left, targets) => f(targets)
+      case _                    => false
     }
   }
 
-  private def expand(state: MacroState) = {
+  def existsGoingRight(ts : Seq[(Step, Seq[Int])],
+                       f : Seq[Int] => Boolean) : Boolean = {
+    ts exists {
+      case (Right, targets) => f(targets)
+      case _                     => false
+    }
+  }
 
-    // condition 1: lr states can be added
-    for (lrState <- afa.lrStates if !state.contains(lrState)) {
-      val nextState = state + lrState
+  def possibleFromState(state : Int) : Boolean = {
+    (
+      !(rfStates contains state)
+      ) && (
+      !(rlStates contains state)
+      )
+  }
 
-      epsilonEdges.add(EpsilonEdge(state, nextState))
-      schedule(nextState)
+  def possibleFromState(state    : Int,
+                        label    : Int,
+                        toStates : Set[Int]) : Boolean = {
+    possibleFromState(state) && (
+      // ?r states have successors in toStates
+      !(xrStates contains state) ||
+        existsGoingRight(outgoing(state, label),
+          targets => targets forall toStates)
+      ) && (
+      // l? states have predecessors in toStates
+      !(lxStates contains state) ||
+        (toStates exists { toState =>
+          existsGoingLeft(outgoing(toState, label),
+            targets => targets contains state)
+        })
+      )
+  }
+
+  /**
+   * If <code>state</code> is contained in a from-state, then one of
+   * the given result sets has to be contained in the corresponding
+   * to-state.
+   */
+  val fromStateImplications : Map[(Int /* state */, Int /* label */),
+    Seq[Seq[Set[Int]]]] =
+    (for (label <- letters.iterator; state <- states.iterator) yield {
+      (state, label) -> {
+        (if (xrStates contains state)
+          List(minElements(for ((Right, targets) <- outgoing(state, label))
+            yield targets))
+        else
+          List()) ++
+          (if (lxStates contains state)
+            List(for (toState <- states.toList;
+                      if existsGoingLeft(outgoing(toState, label),
+                        targets => targets contains state))
+            yield Set(toState))
+          else
+            List())
+      }
+    }).toMap
+
+  def minElements(sets : Seq[Seq[Int]]) : Seq[Set[Int]] = {
+    var imps : List[Set[Int]] = List()
+    def addImp(s : Set[Int]) : Unit =
+      if (!(imps exists {t => t subsetOf s})) {
+        imps = imps filterNot { t => s subsetOf t }
+        imps = s :: imps
+      }
+
+    for (s <- sets)
+      addImp(s.toSet)
+
+    imps
+  }
+
+  def possibleToState(state : Int) : Boolean = {
+    (
+      !(irStates contains state)
+      ) && (
+      !(lrStates contains state)
+      )
+  }
+
+  def possibleToState(state      : Int,
+                      label      : Int,
+                      fromStates : Set[Int]) : Boolean = {
+    possibleToState(state) && (
+      // ?l states have successors in fromStates
+      !(xlStates contains state) ||
+        existsGoingLeft(outgoing(state, label),
+          targets => targets forall fromStates)
+      ) && (
+      // r? states have predecessors in fromStates
+      !(rxStates contains state) ||
+        (fromStates exists { fromState =>
+          existsGoingRight(outgoing(fromState, label),
+            targets => targets contains state)
+        })
+      )
+  }
+
+  def transitionExists(fromStates : Set[Int],
+                       label : Int,
+                       toStates : Set[Int]) : Boolean = {
+    (
+
+      fromStates forall { state =>
+
+        possibleFromState(state, label, toStates) && (
+
+          // l? states have predecessors in toStates
+          !(lxStates contains state) ||
+            (toStates exists { toState =>
+              existsGoingLeft(outgoing(toState, label),
+                targets =>
+                  (targets contains state) &&
+                    (targets forall fromStates))
+            })
+
+          )
+
+      }) && (
+
+      toStates forall { state =>
+
+        possibleToState(state, label, fromStates) && (
+
+          // r? states have predecessors in fromStates
+          !(rxStates contains state) ||
+            (fromStates exists { fromState =>
+              existsGoingRight(outgoing(fromState, label),
+                targets =>
+                  (targets contains state) &&
+                    (targets forall toStates))
+            })
+
+          )
+
+      }
+
+      )
+  }
+
+  private val builderLock = new Object
+
+  private val discovered =
+    ConcurrentHashMap.newKeySet[Set[Int]]()
+
+  private val workQueue =
+    new LinkedBlockingQueue[Set[Int]]()
+
+  private val pendingStates =
+    new AtomicInteger(0)
+
+  val builder = new BricsAutomatonBuilder
+  val epsilons = new MHashMap[BricsAutomaton#State, MSet[BricsAutomaton#State]]
+    with MultiMap[BricsAutomaton#State, BricsAutomaton#State]
+
+  builder.setMinimize(true)
+
+  var transitionCnt = 0
+
+  val setStates = new MHashMap[Set[Int], BricsAutomaton#State]
+
+  def getStateFor(s: Set[Int]): BricsAutomaton#State =
+    builderLock.synchronized {
+      setStates.getOrElseUpdate(s, {
+        val res = builder.getNewState
+
+        if (s subsetOf rfStates)
+          builder.setAccept(res, true)
+
+        schedule(s)
+
+        res
+      })
+    }
+  // Initial state is {init}
+  for (s <- irStates) {
+    val initialState = getStateFor(Set(s))
+
+    builderLock.synchronized {
+      builder.setInitialState(initialState)
+    }
+  }
+
+  def addEPSReachableStates(state : Set[Int],
+                            bricsState : BricsAutomaton#State) : Unit = {
+    // lr states can be added anytime
+    for (lrState <- lrStates.iterator;
+         if !(state contains lrState)) {
+      val targetState = getStateFor(state + lrState)
+
+      builderLock.synchronized {
+        epsilons.addBinding(bricsState, targetState)
+        transitionCnt += 1
+      }
     }
 
-    // condition 2: rl states can be removed
-    for (rlState <- afa.rlStates if state.contains(rlState)) {
-      val nextState = state - rlState
+    // rl states can be removed anytime
+    for (rlState <- rlStates.iterator;
+         if (state contains rlState)) {
+      val targetState = getStateFor(state - rlState)
 
-      epsilonEdges.add(EpsilonEdge(state, nextState))
-      schedule(nextState)
-    }
-
-    // condition 3, no sinks in Q
-    if (state.exists(s => stateRoles(s) != "rf")) {
-      // loop symbols and build reached states
-      for (label <- afa.letters) {
-
-        def getRightSuccessors(state: MacroState, label: Int): Seq[Int] = {
-          state
-            .filter(s => Set("ir", "rr", "lr").contains(stateRoles(s)))
-            .flatMap(s => outgoingTransitions.getOrElse(s, Seq.empty)
-              .filter(_.label == label)
-              .flatMap(_.targets))
-            .toSeq
-        }
-
-        def getRightPredecessors(state: MacroState, label: Int): Seq[Int] = {
-          state
-            .flatMap(s => incomingTransitions.getOrElse(s, Seq.empty)
-              .filter { case (_, transition) =>
-                transition.label == label && transition.step == Right
-              }
-              .map(_._1))
-            .toSeq
-        }
-
-        // build candidate successor macro state
-        // from condition 5 and 7 Q -> Q'
-        var nextState: MacroState =
-          (getRightSuccessors(state, label) ++ getRightPredecessors(state, label)).toSet
-
-        def satisfiesLeftSuccessors(s: Int): Boolean = {
-          if (!Set("ll", "rl").contains(stateRoles(s)))
-            true
-          else
-            outgoingTransitions
-              .getOrElse(s, Seq.empty)
-              .exists(t =>
-                t.label == label &&
-                  t.step == Left &&
-                  t.targets.forall(state.contains)
-              )
-        }
-
-        def satisfiesLeftPredecessors(s: Int): Boolean = {
-          if (!Set("rl", "rr", "rf").contains(stateRoles(s)))
-            true
-          else
-            incomingTransitions
-              .getOrElse(s, Seq.empty)
-              .exists { case (source, transition) =>
-                state.contains(source) &&
-                  transition.label == label &&
-                  transition.step == Right &&
-                  transition.targets.forall(nextState.contains)
-              }
-        }
-
-        // condition 4:
-        // successor must not contain ir or lr states
-        nextState = nextState.filterNot { s =>
-          Set("ir", "lr").contains(stateRoles(s))
-        }
-
-        nextState = nextState.filter { s =>
-          satisfiesLeftSuccessors(s) &&
-            satisfiesLeftPredecessors(s)
-        }
-
-        edges.add(Edge(state, label, nextState))
-        schedule(nextState)
+      builderLock.synchronized {
+        epsilons.addBinding(bricsState, targetState)
+        transitionCnt += 1
       }
     }
   }
 
-  private val activeWorkers = new AtomicInteger(0)
+  def addLabelReachableStates(fromStates : Set[Int],
+                              bricsState : BricsAutomaton#State) : Unit = {
+    if (fromStates exists { s => !possibleFromState(s) })
+      return
 
-  private def buildAutomaton(): BricsAutomaton = {
-    val builder = new BricsAutomatonBuilder
+    for (label <- letters) {
+      val consideredToStates = new MHashSet[Set[Int]]
 
-    val stateMap = mutable.HashMap[MacroState, BricsAutomaton#State]()
+      def lowerBounds(cur : Set[Int],
+                      imps : List[Seq[Set[Int]]]) : Iterator[Set[Int]] =
+        imps match {
+          case List() =>
+            Iterator(cur)
+          case Seq() :: _ =>
+            Iterator.empty
+          case imp :: rest if (imp exists { s => s subsetOf cur }) =>
+            lowerBounds(cur, rest)
+          case imp :: rest =>
+            for (s <- imp.iterator; res <- lowerBounds(cur ++ s, rest))
+              yield res
+        }
 
-    val epsilons =
-      new MHashMap[BricsAutomaton#State, MSet[BricsAutomaton#State]]
-        with MultiMap[BricsAutomaton#State, BricsAutomaton#State]
+      val upperToBound =
+        (for (s <- states.iterator; if (possibleToState(s, label, fromStates)))
+          yield s).toSet
 
-    val discoveredIt = discovered.iterator()
+      if (!upperToBound.isEmpty) {
+        val lowerBoundDisjuncts =
+          (for (s <- fromStates; imps <- fromStateImplications((s, label)))
+            yield (imps filter { s =>
+              s subsetOf upperToBound })).toList.sortBy(_.size)
 
-    while (discoveredIt.hasNext) {
-      val macroState = discoveredIt.next()
-      val bricsState = builder.getNewState
+        for (lowerToBound <- lowerBounds(Set(), lowerBoundDisjuncts)) {
+          assert(lowerToBound subsetOf upperToBound)
+          if (!(consideredToStates contains lowerToBound)) {
+            val diff = upperToBound -- lowerToBound
+            for (s <- Combinatorics.genSubMultisets(diff.toSeq.sorted)) {
+              val candidate = lowerToBound ++ s
+              if (consideredToStates add candidate) {
+                if (transitionExists(fromStates, label, candidate)) {
+                  val targetState = getStateFor(candidate)
 
-      stateMap += macroState -> bricsState
+                  builderLock.synchronized {
+                    builder.addTransition(
+                      bricsState,
+                      (label.toChar, label.toChar),
+                      targetState
+                    )
 
-      if (macroState.subsetOf(afa.rfStates))
-        builder.setAccept(bricsState, true)
+                    transitionCnt += 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
-
-    builder.setInitialState(
-      stateMap(afa.initialStates.toSet)
-    )
-
-    val edgeIt = edges.iterator()
-
-    while (edgeIt.hasNext) {
-      val edge = edgeIt.next()
-
-      builder.addTransition(
-        stateMap(edge.from),
-        (edge.label.toChar, edge.label.toChar),
-        stateMap(edge.to)
-      )
-    }
-
-    val epsilonIt = epsilonEdges.iterator()
-
-    while (epsilonIt.hasNext) {
-      val edge = epsilonIt.next()
-
-      epsilons.addBinding(
-        stateMap(edge.from),
-        stateMap(edge.to)
-      )
-    }
-
-    AutomataUtils.buildEpsilons(builder, epsilons)
-
-    builder.getAutomaton
   }
 
-  def run() {
-    val executor = Executors.newFixedThreadPool(numWorkers)
+  private def schedule(state: Set[Int]): Unit = {
+    if (discovered.add(state)) {
+      pendingStates.incrementAndGet()
+      workQueue.put(state)
+    }
+  }
 
-    // initial macro state
-    schedule(afa.initialStates.toSet)
+  private val workerCount =
+    math.max(1, Runtime.getRuntime.availableProcessors())
 
-    for (_ <- 0 until numWorkers) {
+  private val executor =
+    Executors.newFixedThreadPool(workerCount)
+
+  private val workers =
+    for (_ <- 0 until workerCount) yield {
       executor.submit(new Runnable {
         override def run(): Unit = {
           var running = true
 
           while (running) {
-            val state = workQueue.poll(100, TimeUnit.MILLISECONDS)
-
-            if (state != null) {
-              activeWorkers.incrementAndGet()
-
-              try {
-                expand(state)
-              } finally {
-                activeWorkers.decrementAndGet()
-              }
+            if (pendingStates.get() == 0) {
+              running = false
             } else {
-              // no queued work and nobody is currently producing new work
-              if (workQueue.isEmpty && activeWorkers.get() == 0)
-                running = false
+              val state =
+                workQueue.poll(50, TimeUnit.MILLISECONDS)
+
+              if (state != null) {
+                try {
+                  ap.util.Timeout.check
+
+                  val bricsState = getStateFor(state)
+
+                  addEPSReachableStates(state, bricsState)
+                  addLabelReachableStates(state, bricsState)
+                } finally {
+                  pendingStates.decrementAndGet()
+                }
+              }
             }
           }
         }
       })
     }
 
-    executor.shutdown()
-    executor.awaitTermination(Long.MaxValue, TimeUnit.NANOSECONDS)
-  }
+  executor.shutdown()
 
-  def result: BricsAutomaton = {
-    run()
-    buildAutomaton()
-  }
+  // Also propagates exceptions thrown by workers.
+  for (worker <- workers)
+    worker.get()
+
+  /*println
+  println("#states initially:               " + setStates.size)
+  println("#transitions initially:          " + transitionCnt)*/
+
+  AutomataUtils.buildEpsilons(builder, epsilons)
+
+  val result = builder.getAutomaton
+
+  /*println
+  println("#states after minimization:      " + result.states.size)
+  println("#transitions after minimization: " +
+            (for (s <- result.states.toList;
+                  t <- result.outgoingTransitions(s).toList)
+             yield t).size)*/
 }
