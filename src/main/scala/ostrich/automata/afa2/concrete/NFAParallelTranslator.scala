@@ -38,7 +38,7 @@ import ostrich.automata.afa2.symbolic.SymbEpsReducer
 import ostrich.automata.{AutomataUtils, BricsAutomaton, BricsAutomatonBuilder}
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{ConcurrentHashMap, Executors, LinkedBlockingQueue, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue, Executors, LinkedBlockingQueue, TimeUnit}
 import scala.collection.mutable.{MultiMap, HashMap => MHashMap, HashSet => MHashSet, Set => MSet}
 
 object NFATranslatorParallel {
@@ -76,18 +76,13 @@ class ParallelNFATranslator(afa : AFA2) {
   // TODO: check that automaton is not looping
   // (requires Parikh image computation)
 
+  private val activeWorkers = new AtomicInteger(0)
+  private val maxActiveWorkers = new AtomicInteger(0)
+
   type MacroState = Set[Int]
 
-  case class Edge(
-                   from: MacroState,
-                   label: Int,
-                   to: MacroState
-                 )
-
-  case class EpsilonEdge(
-                          from: MacroState,
-                          to: MacroState
-                        )
+  case class Edge(from: MacroState,  label: Int, to: MacroState)
+  case class EpsilonEdge(from: MacroState, to: MacroState)
 
   val xrStates = irStates ++ rrStates ++ lrStates
   val xlStates = llStates ++ rlStates
@@ -248,7 +243,11 @@ class ParallelNFATranslator(afa : AFA2) {
       )
   }
 
-  private val builderLock = new Object
+  private val edges =
+    new ConcurrentLinkedQueue[Edge]()
+
+  private val epsilonEdges =
+    new ConcurrentLinkedQueue[EpsilonEdge]()
 
   private val discovered =
     ConcurrentHashMap.newKeySet[Set[Int]]()
@@ -259,65 +258,32 @@ class ParallelNFATranslator(afa : AFA2) {
   private val pendingStates =
     new AtomicInteger(0)
 
-  val builder = new BricsAutomatonBuilder
-  val epsilons = new MHashMap[BricsAutomaton#State, MSet[BricsAutomaton#State]]
-    with MultiMap[BricsAutomaton#State, BricsAutomaton#State]
-
-  builder.setMinimize(true)
-
-  var transitionCnt = 0
-
-  val setStates = new MHashMap[Set[Int], BricsAutomaton#State]
-
-  def getStateFor(s: Set[Int]): BricsAutomaton#State =
-    builderLock.synchronized {
-      setStates.getOrElseUpdate(s, {
-        val res = builder.getNewState
-
-        if (s subsetOf rfStates)
-          builder.setAccept(res, true)
-
-        schedule(s)
-
-        res
-      })
-    }
   // Initial state is {init}
-  for (s <- irStates) {
-    val initialState = getStateFor(Set(s))
+  val initialMacroStates = irStates.map(s => Set(s))
+  for (state <- initialMacroStates)
+    schedule(state)
 
-    builderLock.synchronized {
-      builder.setInitialState(initialState)
-    }
-  }
-
-  def addEPSReachableStates(state : Set[Int],
-                            bricsState : BricsAutomaton#State) : Unit = {
+  def addEPSReachableStates(state: MacroState): Unit = {
     // lr states can be added anytime
     for (lrState <- lrStates.iterator;
          if !(state contains lrState)) {
-      val targetState = getStateFor(state + lrState)
 
-      builderLock.synchronized {
-        epsilons.addBinding(bricsState, targetState)
-        transitionCnt += 1
-      }
+      val target = state + lrState
+      epsilonEdges.add(EpsilonEdge(state, target))
+      schedule(target)
     }
 
     // rl states can be removed anytime
     for (rlState <- rlStates.iterator;
          if (state contains rlState)) {
-      val targetState = getStateFor(state - rlState)
 
-      builderLock.synchronized {
-        epsilons.addBinding(bricsState, targetState)
-        transitionCnt += 1
-      }
+      val target = state - rlState
+      epsilonEdges.add(EpsilonEdge(state, target))
+      schedule(target)
     }
   }
 
-  def addLabelReachableStates(fromStates : Set[Int],
-                              bricsState : BricsAutomaton#State) : Unit = {
+  def addLabelReachableStates(fromStates: MacroState): Unit = {
     if (fromStates exists { s => !possibleFromState(s) })
       return
 
@@ -351,22 +317,15 @@ class ParallelNFATranslator(afa : AFA2) {
         for (lowerToBound <- lowerBounds(Set(), lowerBoundDisjuncts)) {
           assert(lowerToBound subsetOf upperToBound)
           if (!(consideredToStates contains lowerToBound)) {
+
+            // TODO: Prevent generating all subsets of the dif between upper and lower bound, enforce conditions 5 and 7 directly!
             val diff = upperToBound -- lowerToBound
             for (s <- Combinatorics.genSubMultisets(diff.toSeq.sorted)) {
               val candidate = lowerToBound ++ s
               if (consideredToStates add candidate) {
                 if (transitionExists(fromStates, label, candidate)) {
-                  val targetState = getStateFor(candidate)
-
-                  builderLock.synchronized {
-                    builder.addTransition(
-                      bricsState,
-                      (label.toChar, label.toChar),
-                      targetState
-                    )
-
-                    transitionCnt += 1
-                  }
+                  edges.add(Edge(fromStates, label, candidate))
+                  schedule(candidate)
                 }
               }
             }
@@ -406,11 +365,17 @@ class ParallelNFATranslator(afa : AFA2) {
                 try {
                   ap.util.Timeout.check
 
-                  val bricsState = getStateFor(state)
+                  val active = activeWorkers.incrementAndGet()
+                  var old = maxActiveWorkers.get()
+                  while (active > old &&
+                    !maxActiveWorkers.compareAndSet(old, active))
+                    old = maxActiveWorkers.get()
 
-                  addEPSReachableStates(state, bricsState)
-                  addLabelReachableStates(state, bricsState)
+                  addEPSReachableStates(state)
+                  addLabelReachableStates(state)
+
                 } finally {
+                  activeWorkers.decrementAndGet()
                   pendingStates.decrementAndGet()
                 }
               }
@@ -426,18 +391,55 @@ class ParallelNFATranslator(afa : AFA2) {
   for (worker <- workers)
     worker.get()
 
-  /*println
-  println("#states initially:               " + setStates.size)
-  println("#transitions initially:          " + transitionCnt)*/
+  // build the bricks automaton
+  // 1. Step: Add states and mark inital/final
+  val builder = new BricsAutomatonBuilder
+  builder.setMinimize(true)
 
+  val setStates = new MHashMap[MacroState, BricsAutomaton#State]
+
+  val stateIterator = discovered.iterator()
+  while (stateIterator.hasNext) {
+    val state = stateIterator.next()
+    val bricsState = builder.getNewState
+
+    if (state subsetOf rfStates)
+      builder.setAccept(bricsState, true)
+
+    setStates.put(state, bricsState)
+  }
+
+  for (state <- initialMacroStates)
+    builder.setInitialState(setStates(state))
+
+  // 2. Step: Add epsilon edges
+  val epsilons =
+    new MHashMap[BricsAutomaton#State, MSet[BricsAutomaton#State]]
+      with MultiMap[BricsAutomaton#State, BricsAutomaton#State]
+
+  val epsilonIterator = epsilonEdges.iterator()
+  while (epsilonIterator.hasNext) {
+    val edge = epsilonIterator.next()
+
+    epsilons.addBinding(
+      setStates(edge.from),
+      setStates(edge.to)
+    )
+  }
+
+  // 3. Step: Add sigma transitions
+  val edgeIterator = edges.iterator()
+  while (edgeIterator.hasNext) {
+    val edge = edgeIterator.next()
+
+    builder.addTransition(
+      setStates(edge.from),
+      (edge.label.toChar, edge.label.toChar),
+      setStates(edge.to)
+    )
+  }
+
+  println("Max active workers: " + maxActiveWorkers.get())
   AutomataUtils.buildEpsilons(builder, epsilons)
-
   val result = builder.getAutomaton
-
-  /*println
-  println("#states after minimization:      " + result.states.size)
-  println("#transitions after minimization: " +
-            (for (s <- result.states.toList;
-                  t <- result.outgoingTransitions(s).toList)
-             yield t).size)*/
 }

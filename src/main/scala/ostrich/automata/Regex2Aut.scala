@@ -39,7 +39,7 @@ import ap.parser._
 import ap.theories.strings.StringTheory
 import ap.theories.ModuloArithmetic
 import dk.brics.automaton.{BasicAutomata, BasicOperations, RegExp, Automaton => BAutomaton}
-import ostrich.automata.afa2.concrete.{AFA2, AFA2StateDuplicator, NFATranslator}
+import ostrich.automata.afa2.concrete.{AFA2, AFA2StateDuplicator, NFATranslator, NFATranslatorParallel}
 import ostrich.automata.afa2.symbolic.{SymbAFA2Builder, SymbEpsReducer, SymbExtAFA2, SymbMutableAFA2, SymbToConcTranslator}
 import ostrich.automata.afa2.AFA2PrintingUtils
 
@@ -499,11 +499,13 @@ class Regex2Aut(theory : OstrichStringTheory) {
     /*
     Step 5: 2AFA -> NFA translation
      */
-    t1 = System.currentTimeMillis()
+    val parallelStart = System.nanoTime()
+    val concNFAParallel = NFATranslatorParallel(AFA2StateDuplicator(redConcAut))
+    println("Parallel 2AFA -> NFA: " + (System.nanoTime() - parallelStart) / 1e9 + "s")
+
+    val lazyStart = System.nanoTime()
     val concNFA = NFATranslator(AFA2StateDuplicator(redConcAut), epsRed, Some(transl.rangeMap.map(_.swap)))
-    duration = (System.currentTimeMillis() - t1) // / 1000d
-    //println("Time for 2AFA -> NFA translation: " + duration)
-    //println("BricsAutomaton:\n" + res)
+    println("Lazy 2AFA -> NFA: " + (System.nanoTime() - lazyStart) / 1e9 + "s")
 
     val symbNFA = transl.bricsBack(concNFA, Set(epsRed.beginMarker, epsRed.endMarker))
 
