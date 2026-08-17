@@ -6,7 +6,7 @@ import ostrich.automata.afa2.concrete.{AFA2StateDuplicator, AFA2StateExpander, A
 object NFATranslationCorrectness extends Properties("AFA2") {
 
   property("Parallel-NFATranslator tested against Lazy-NFATranslator") = {
-    val automataCount = 10L
+    val automataCount = 100L
     var seed = 0L
 
     var parallelTime = 0L
@@ -14,7 +14,7 @@ object NFATranslationCorrectness extends Properties("AFA2") {
     var allEquivalent = true
 
     while (seed < automataCount && allEquivalent) {
-      val aut = AFA2TestHelper.randomAFA2(seed, 10000, 5, 0.5)
+      val aut = AFA2TestHelper.randomAFA2(seed, 1000, 5, 0.5)
       val safa = AFA2StateDuplicator(aut)
       println(safa.states.size + " states in the automaton")
 
@@ -45,16 +45,12 @@ object NFATranslationCorrectness extends Properties("AFA2") {
     val parallelSeconds = parallelTime / 1e9
     val lazySeconds = lazyTime / 1e9
 
-    val fasterPercent =
-      (lazyTime.toDouble - parallelTime.toDouble) / lazyTime.toDouble * 100.0
-
     val speedup =
       lazyTime.toDouble / parallelTime.toDouble
 
     println()
     println(f"Parallel: $parallelSeconds%.3f s")
     println(f"Lazy:     $lazySeconds%.3f s")
-    println(f"Parallel is $fasterPercent%.2f%% faster")
     println(f"Speedup:  ${speedup}%.2fx")
 
     allEquivalent
