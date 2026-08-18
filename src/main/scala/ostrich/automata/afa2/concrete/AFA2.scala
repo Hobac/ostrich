@@ -375,11 +375,13 @@ case class AFA2(initialStates : Seq[Int],
       _.localDominatedStateCheck()
     )
 
+    /**
     reducedAut = runAndMeasure(
       "dominatedStateCheck()",
       reducedAut,
       _.dominatedStateCheck()
     )
+    */
 
     reducedAut
   }

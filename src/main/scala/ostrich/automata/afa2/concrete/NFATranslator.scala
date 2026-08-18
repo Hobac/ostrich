@@ -356,6 +356,7 @@ class LazyNFATranslator(afa : AFA2, epsRed : SymbEpsReducer, charMap: Option[Map
   AutomataUtils.buildEpsilons(builder, epsilons)
 
   val result = builder.getAutomaton
+  println("Lazy-NFA size: " + result.states.size)
 
   /*println
   println("#states after minimization:      " + result.states.size)

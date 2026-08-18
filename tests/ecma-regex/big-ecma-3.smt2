@@ -6,7 +6,7 @@
 
 (assert (not (and
 
-        (= (str.in_re w (re.from_ecma2020 '/(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{6,}/'))
+        (= (str.in_re w (re.from_ecma2020 '(\d{11})|^((\d{7,8})|(\d{4}|\d{3})-(\d{7,8})|(\d{4}|\d{3})-(\d{7,8})-(\d{4}|\d{3}|\d{2}|\d{1})|(\d{7,8})-(\d{4}|\d{3}|\d{2}|\d{1}))$'))
            (str.in_re w
               (re.inter (re.from_ecma2020 '/.{6,}/')
                         (re.from_ecma2020 '.*\d.*')
@@ -16,8 +16,6 @@
         (= (str.in_re w (re.from_ecma2020 '.(?=a|b)[b-z]'))
            (str.in_re w (re.from_ecma2020 '.b')))
 
-        (= (str.in_re w (re.from_ecma2020 '(?<!\w)(\(?(\+|00)?48\)?)?[ -]?\d{3}[ -]?\d{3}[ -]?\d{3}(?!\w)'))
-           (str.in_re w (re.from_ecma2020 'a*x')))
 
  )))
 

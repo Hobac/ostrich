@@ -14,16 +14,16 @@ object NFATranslationCorrectness extends Properties("AFA2") {
     var allEquivalent = true
 
     while (seed < automataCount && allEquivalent) {
-      val aut = AFA2TestHelper.randomAFA2(seed, 1000, 5, 0.5)
+      val aut = AFA2TestHelper.randomAFA2(seed, 1000, 10, 0.5)
       val safa = AFA2StateDuplicator(aut)
       println(safa.states.size + " states in the automaton")
 
       val parallelStart = System.nanoTime()
-      val parallel = NFATranslatorParallel(AFA2StateDuplicator(safa))
+      val parallel = NFATranslatorParallel(safa)
       parallelTime += System.nanoTime() - parallelStart
 
       val lazyStart = System.nanoTime()
-      val lazyTown = NFATranslator(AFA2StateDuplicator(safa), null)
+      val lazyTown = NFATranslator(safa, null)
       lazyTime += System.nanoTime() - lazyStart
 
       val parallelMinusLazyTown = parallel & !lazyTown
