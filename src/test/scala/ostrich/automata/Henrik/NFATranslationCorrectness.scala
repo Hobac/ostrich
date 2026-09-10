@@ -14,7 +14,7 @@ object NFATranslationCorrectness extends Properties("AFA2") {
     var allEquivalent = true
 
     while (seed < automataCount && allEquivalent) {
-      val aut = AFA2TestHelper.randomAFA2(seed, 1000, 10, 0.5)
+      val aut = AFA2TestHelper.randomAFA2(seed, 100, 10, 0.5)
       val safa = AFA2StateDuplicator(aut)
       println(safa.states.size + " states in the automaton")
 

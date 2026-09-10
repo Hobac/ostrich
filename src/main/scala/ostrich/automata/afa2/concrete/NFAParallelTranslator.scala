@@ -80,77 +80,87 @@ class ParallelNFATranslator(afa : AFA2) {
   private val maxActiveWorkers = new AtomicInteger(0)
 
   type MacroState = Set[Int]
-
   case class Edge(from: MacroState,  label: Int, to: MacroState)
   case class EpsilonEdge(from: MacroState, to: MacroState)
 
+  // states that leave by moving right
   private val xrStates = irStates ++ rrStates ++ lrStates
+
+  // states that leave by moving left
   private val xlStates = llStates ++ rlStates
+
+  // states that were entered by moving right
   private val rxStates = rfStates ++ rrStates ++ rlStates
+
+  // states that were entered by moving left
   private val lxStates = llStates ++ lrStates
 
-
-  def outgoing(state : Int, l : Int) : Seq[(Step, Seq[Int])] =
-    for (StepTransition(`l`, step, ts) <- transitions.getOrElse(state, List())) yield {
-      (step, ts)
-    }
-
-  def existsGoingLeft(ts : Seq[(Step, Seq[Int])],
-                      f : Seq[Int] => Boolean) : Boolean = {
-    ts exists {
-      case (Left, targets) => f(targets)
-      case _                    => false
-    }
+  // get all transitions from state that read the given label
+  def outgoing(state: Int, label: Int): Seq[(Step, Seq[Int])] = {
+    transitions.getOrElse(state, List())
+      .filter(_.label == label)
+      .map(t => (t.step, t.targets))
   }
 
-  def existsGoingRight(ts : Seq[(Step, Seq[Int])],
-                       f : Seq[Int] => Boolean) : Boolean = {
-    ts exists {
-      case (Right, targets) => f(targets)
-      case _                     => false
-    }
-  }
+  // check if there is a left-moving transition whose targets satisfy the condition
+  def existsGoingLeft(transitions: Seq[(Step, Seq[Int])], condition: Seq[Int] => Boolean): Boolean =
+    transitions.exists(t => t._1 == Left && condition(t._2))
 
+  // check if there is a right-moving transition whose targets satisfy the condition
+  def existsGoingRight(transitions: Seq[(Step, Seq[Int])], condition: Seq[Int] => Boolean): Boolean =
+    transitions.exists(t => t._1 == Right && condition(t._2))
+
+  // Condition 3: (no sink states in Q)
+  // Final-right and right-left states cannot occur in the source macro-state
   def possibleFromState(state : Int) : Boolean = {
-    (
-      !(rfStates contains state)
-      ) && (
-      !(rlStates contains state)
-      )
+    (!(rfStates contains state)) && (!(rlStates contains state))
   }
 
-  def possibleFromState(state    : Int,
-                        label    : Int,
-                        toStates : Set[Int]) : Boolean = {
+  /** Checks whether a state can be part of Q while satisfying conditions 3, 5, and 7. */
+  def possibleFromState(state : Int, label : Int, toStates : Set[Int]) : Boolean = {
+    // Condition 3: (no sink states in Q)
     possibleFromState(state) && (
-      // ?r states have successors in toStates
-      !(xrStates contains state) ||
-        existsGoingRight(outgoing(state, label),
-          targets => targets forall toStates)
+      // Condition 5: Right-successors.
+      // Every xr state (left from left to right) in Q must have a right transition whose
+      // existential target is in Q' or whose universal targets are all in Q'.
+      !(xrStates contains state) || outgoing(state, label).exists(t => t._1 == Right && t._2.forall(toStates.contains))
       ) && (
-      // l? states have predecessors in toStates
-      !(lxStates contains state) ||
-        (toStates exists { toState =>
-          existsGoingLeft(outgoing(toState, label),
-            targets => targets contains state)
-        })
+      // Condition 7: every lx state in Q (entered from right to left)
+      // must have a matching left-moving transition from some state in Q' back to it
+      !(lxStates contains state) || toStates.exists(toState =>
+        outgoing(toState, label).exists(t => t._1 == Left && t._2.contains(state)))
       )
   }
 
   /**
-   * If <code>state</code> is contained in a from-state, then one of
-   * the given result sets has to be contained in the corresponding
-   * to-state.
+   * Precomputes the requirements that a state in Q imposes on Q'.
+   *
+   * For each (state, label), the result contains requirements of the form:
+   * Seq(Set(...), Set(...)), meaning that Q' must contain at least one of these sets.
+   *
+   * Example:
+   * Seq(Set(4), Set(7, 8)) means Q' must contain 4 OR both 7 and 8.
+   *
+   * xr states create a Condition 5 requirement:
+   * Q' must contain all targets of at least one right-moving transition from that state.
+   *
+   * lx states create a Condition 7 requirement:
+   * Q' must contain at least one state with a left-moving transition back to that state.
    */
   val fromStateImplications : Map[(Int /* state */, Int /* label */),
     Seq[Seq[Set[Int]]]] =
     (for (label <- letters.iterator; state <- states.iterator) yield {
       (state, label) -> {
+
+        // Condition 5: for an xr state, collect the possible target sets of
+        // its right-moving transitions. Q' must contain one of these sets.
         (if (xrStates contains state)
           List(minElements(for ((Right, targets) <- outgoing(state, label))
             yield targets))
         else
           List()) ++
+          // Condition 7: for an lx state, collect all states that have a
+          // left-moving transition back to it. Q' must contain one of them.
           (if (lxStates contains state)
             List(for (toState <- states.toList;
                       if existsGoingLeft(outgoing(toState, label),
@@ -175,52 +185,40 @@ class ParallelNFATranslator(afa : AFA2) {
     imps
   }
 
+  // Condition 4: no source states in Q'
   def possibleToState(state : Int) : Boolean = {
-    (
-      !(irStates contains state)
-      ) && (
-      !(lrStates contains state)
-      )
+    (!(irStates contains state)) && (!(lrStates contains state))
   }
 
-  def possibleToState(state      : Int,
-                      label      : Int,
-                      fromStates : Set[Int]) : Boolean = {
+  /** Checks whether a state can be part of Q' while satisfying conditions 4, 6, and 8. */
+  def possibleToState(state : Int, label : Int, fromStates : Set[Int]) : Boolean = {
+    // Condition 4: no source states in Q'
     possibleToState(state) && (
-      // ?l states have successors in fromStates
+      // Condition 6: every xl state in Q' (leaves by moving left)
+      // must have a left-moving transition whose targets are contained in Q
       !(xlStates contains state) ||
-        existsGoingLeft(outgoing(state, label),
-          targets => targets forall fromStates)
+        outgoing(state, label).exists(t => t._1 == Left && t._2.forall(fromStates.contains))
       ) && (
-      // r? states have predecessors in fromStates
-      !(rxStates contains state) ||
-        (fromStates exists { fromState =>
-          existsGoingRight(outgoing(fromState, label),
-            targets => targets contains state)
-        })
+      // Condition 8: every rx state in Q' (entered from left to right)
+      // must have a matching right-moving transition from some state in Q to this state
+      !(rxStates contains state) || fromStates.exists(fromState =>
+          outgoing(fromState, label).exists(t => t._1 == Right && t._2.contains(state)))
       )
   }
 
-  private val edges =
-    new ConcurrentLinkedQueue[Edge]()
+  private val edges = new ConcurrentLinkedQueue[Edge]()
+  private val epsilonEdges = new ConcurrentLinkedQueue[EpsilonEdge]()
+  private val discovered = ConcurrentHashMap.newKeySet[Set[Int]]()
+  private val workQueue = new LinkedBlockingQueue[Set[Int]]()
+  private val pendingStates = new AtomicInteger(0)
 
-  private val epsilonEdges =
-    new ConcurrentLinkedQueue[EpsilonEdge]()
-
-  private val discovered =
-    ConcurrentHashMap.newKeySet[Set[Int]]()
-
-  private val workQueue =
-    new LinkedBlockingQueue[Set[Int]]()
-
-  private val pendingStates =
-    new AtomicInteger(0)
-
-  // Initial state is {init}
+  // initial state is {init}
   private val initialMacroStates = irStates.map(s => Set(s))
   for (state <- initialMacroStates)
     schedule(state)
 
+  // schedules the successor states that are reachable via epsilon transitions
+  // defined by Condition 1 and 2
   def addEPSReachableStates(state: MacroState): Unit = {
     // lr states can be added anytime
     for (lrState <- lrStates.iterator;
@@ -241,15 +239,16 @@ class ParallelNFATranslator(afa : AFA2) {
     }
   }
 
-  // Computes the alternative target-state sets that satisfy condition 5
-  // for every relevant state in fromStates.
-  def condition5Sets(fromStates: Set[Int], label: Int): Seq[Seq[Set[Int]]] = {
+  // Computes the possible Q' states that can support each lx state in Q.
+  // A state can support an lx state if it has a left-moving transition
+  // that contains the lx state and whose targets are all contained in Q.
+  def leftPredecessorChoices(fromStates: MacroState, label: Int): Seq[Seq[Set[Int]]] = {
     for {
       state <- fromStates.toSeq
       if lxStates contains state
     } yield {
       for {
-        toState <- states.toSeq
+        toState <- states
         if existsGoingLeft(
           outgoing(toState, label),
           targets =>
@@ -260,9 +259,10 @@ class ParallelNFATranslator(afa : AFA2) {
     }
   }
 
-  // Computes the alternative target-state sets that satisfy condition 7
-  // for the given target state.
-  def condition7Sets(state: Int, fromStates: Set[Int], label: Int): Seq[Set[Int]] = {
+  // Computes the possible right-successor sets that support a state in Q'.
+  // The state must occur in the target set of a right-moving transition from Q.
+  // The complete target set is returned because all targets must be contained in Q'.
+  def rightSuccessorChoices(state: Int, fromStates: MacroState, label: Int): Seq[Set[Int]] = {
     if (!(rxStates contains state))
       return Seq(Set.empty)
 
@@ -274,116 +274,140 @@ class ParallelNFATranslator(afa : AFA2) {
   }
 
   def addLabelReachableStates(fromStates: MacroState): Unit = {
+    // Builds all possible lower bounds for Q' that satisfy the given requirements
+    // Each requirement contains alternative sets, of which at least one must be contained in Q'
+    def lowerBounds(cur : Set[Int], imps : List[Seq[Set[Int]]]) : Iterator[Set[Int]] =
+      imps match {
+        case List() =>
+          Iterator(cur)
+        case Seq() :: _ =>
+          Iterator.empty
+        case imp :: rest if (imp exists { s => s subsetOf cur }) =>
+          lowerBounds(cur, rest)
+        case imp :: rest =>
+          for (s <- imp.iterator; res <- lowerBounds(cur ++ s, rest))
+            yield res
+      }
+
+    // if there is a state in the fromStates that has no valid successor
+    // for example a right final state or a lr turn around state we can stop
     if (fromStates exists { s => !possibleFromState(s) })
       return
 
-    // TODO: Prune states earlier
-    // TODO: Store intermediate results
+    // generate successors independently for every possible input letter
     for (label <- letters) {
+      // all Q' macro-states already considered for this Q and label
       val consideredToStates = new MHashSet[Set[Int]]
 
-      def lowerBounds(cur : Set[Int],
-                      imps : List[Seq[Set[Int]]]) : Iterator[Set[Int]] =
-        imps match {
-          case List() =>
-            Iterator(cur)
-          case Seq() :: _ =>
-            Iterator.empty
-          case imp :: rest if (imp exists { s => s subsetOf cur }) =>
-            lowerBounds(cur, rest)
-          case imp :: rest =>
-            for (s <- imp.iterator; res <- lowerBounds(cur ++ s, rest))
-              yield res
-        }
-
+      // compute the largest possible target macro state
+      // any state that fails possibleToState can never occur in a successor
       val upperToBound =
-        (for (s <- states.iterator; if (possibleToState(s, label, fromStates)))
+        (for (s <- states.iterator; if possibleToState(s, label, fromStates))
           yield s).toSet
 
       if (upperToBound.nonEmpty) {
+
+        // Collect all requirements (states) imposed by states in Q
+        // Each requirement contains alternative state sets that could satisfy it in Q'
+        // Seq(Set(4), Set(7, 8)) means Q' needs 4 OR both 7 and 8.
+        // Example: Q = {1, 2}
+        // state 1 requires: Seq(Set(4), Set(7, 8)) -> Q' must contain 4 OR both 7 and 8
+        // state 2 requires: Seq(Set(5), Set(9)) -> Q' must contain 5 OR 9
+        // Possible Q' lower bounds are therefore:
+        // {4,5}, {4,9}, {7,8,5}, {7,8,9}
+        // Alternatives containing states that are not allowed in Q' are removed.
         val lowerBoundDisjuncts =
           (for (s <- fromStates; imps <- fromStateImplications((s, label)))
-            yield (imps filter { s =>
-              s subsetOf upperToBound })).toList.sortBy(_.size)
+            yield imps filter { s =>
+              s subsetOf upperToBound }).toList.sortBy(_.size)
 
+        // iterate all lower bounds
         for (lowerToBound <- lowerBounds(Set(), lowerBoundDisjuncts)) {
-          assert(lowerToBound subsetOf upperToBound)
+          // not yet considered
           if (!(consideredToStates contains lowerToBound)) {
 
-            // Start with the lower bound that was already generated
-            var condition5Candidates = Seq(lowerToBound)
+            // start with the lower bound already required for Q'
+            // the lower bound is not necessarily a valid successor yet
+            var targetCandidates = Seq(lowerToBound)
 
-            // Condition 5:
-            // For every relevant state in fromStates, choose one possible
-            // target-state set that satisfies condition 5.
-            for (choices <- condition5Sets(fromStates, label)) {
-              condition5Candidates =
-                for {
-                  candidate <- condition5Candidates
-                  choice <- choices
-                  newCandidate = candidate ++ choice
-                  if newCandidate subsetOf upperToBound
-                } yield newCandidate
+            // Add the required left-predecessor choices for states in Q.
+            // Every requirement can branch the current Q' candidates into several new ones.
+            for (choices <- leftPredecessorChoices(fromStates, label)) {
+              // candidates produced while satisfying this one requirement
+              var nextCandidates: Seq[MacroState] = Seq()
+              // try to extend every Q' candidate we already have
+              // at first this is only the lower bound
+              for (candidate <- targetCandidates) {
+                // try every possible way of satisfying the current requirement
+                for (choice <- choices) {
+                  // add the chosen supporting states to the current Q' candidate
+                  val newCandidate = candidate ++ choice
+                  // only keep the candidate if all of its states are allowed in Q'
+                  if (newCandidate subsetOf upperToBound)
+                    // remember this as a possible Q' candidate
+                    nextCandidates = nextCandidates :+ newCandidate
+                }
+              }
+
+              // continue with the candidates that satisfy this requirement
+              targetCandidates = nextCandidates
             }
 
-            // Condition 7:
-            // Extend each candidate until every rx-state contained in it
-            // has one of its required supporting target-state sets.
-            var condition7Candidates = condition5Candidates
-            var condition7Done = false
+            // start with the Q' candidates that already satisfy the previous requirement
+            var completedTargetCandidates = targetCandidates
 
-            while (!condition7Done) {
-              condition7Done = true
+            // becomes true once every current Q' candidate satisfies the remaining support requirements
+            var allCandidatesSupported = false
 
-              condition7Candidates =
-                condition7Candidates.flatMap { candidate =>
+            // repeat until no candidate needs to be extended anymore
+            while (!allCandidatesSupported) {
+              allCandidatesSupported = true
 
-                  // Find a state in the current candidate for which
-                  // condition 7 is not yet satisfied.
-                  val unsatisfiedState =
-                    candidate.find { state =>
-                      (rxStates contains state) &&
-                        !condition7Sets(state, fromStates, label).exists(_ subsetOf candidate)
+              // candidates generated in this iteration
+              var nextCandidates: Seq[MacroState] = Seq()
+
+              // process every current Q' candidate
+              for (candidate <- completedTargetCandidates) {
+
+                // find an rx state in this Q' candidate that is not yet supported
+                // by any right-moving transition from Q
+                val unsupportedState =
+                  candidate.find { state =>
+                    (rxStates contains state) &&
+                      !rightSuccessorChoices(state, fromStates, label).exists(_ subsetOf candidate)
+                  }
+
+                unsupportedState match {
+                  case None =>
+                    // every rx state in this Q' candidate is already supported
+                    nextCandidates = nextCandidates :+ candidate
+
+                  case Some(state) =>
+                    // this candidate still needs to be extended
+                    allCandidatesSupported = false
+
+                    // try every possible right-successor set that can support this state
+                    for (support <- rightSuccessorChoices(state, fromStates, label)) {
+
+                      // add the support states to the current Q' candidate
+                      val newCandidate = candidate ++ support
+
+                      // only keep the candidate if all states are still allowed in Q'
+                      if (newCandidate subsetOf upperToBound)
+                        nextCandidates = nextCandidates :+ newCandidate
                     }
-
-                  unsatisfiedState match {
-                    case None =>
-                      // Condition 7 is satisfied for every state in this candidate.
-                      Seq(candidate)
-
-                    case Some(state) =>
-                      condition7Done = false
-
-                      // Branch over all possible ways of satisfying condition 7
-                      // for this state.
-                      for {
-                        support <- condition7Sets(state, fromStates, label)
-                        newCandidate = candidate ++ support
-                        if newCandidate subsetOf upperToBound
-                      } yield newCandidate
-                  }
                 }
+              }
+
+              // use the newly generated candidates in the next iteration
+              completedTargetCandidates = nextCandidates
             }
 
-            // Add the generated successor macro-states.
-            // Keep transitionExists for now as a correctness check.
-            for (candidate <- condition7Candidates) {
+            // schedule the generated successor macro-states
+            for (candidate <- completedTargetCandidates) {
               if (consideredToStates add candidate) {
-                // Skip candidate if another candidate contains all of its states and thus obligations.
-                // This is a local dominance check and avoids scheduling macro states that are weaker
-                // then other states anyway
-
-                // TODO: We can speed up this check
-                val subsumed =
-                  condition7Candidates.exists { other =>
-                    (other.size > candidate.size) &&
-                      (candidate subsetOf other)
-                  }
-
-                if (!subsumed) {
-                  edges.add(Edge(fromStates, label, candidate))
-                  schedule(candidate)
-                }
+                edges.add(Edge(fromStates, label, candidate))
+                schedule(candidate)
               }
             }
           }
@@ -392,6 +416,7 @@ class ParallelNFATranslator(afa : AFA2) {
     }
   }
 
+  // parallel computation with worker pool
   private def schedule(state: Set[Int]): Unit = {
     if (discovered.add(state)) {
       pendingStates.incrementAndGet()
@@ -444,7 +469,6 @@ class ParallelNFATranslator(afa : AFA2) {
 
   executor.shutdown()
 
-  // Also propagates exceptions thrown by workers.
   for (worker <- workers)
     worker.get()
 
