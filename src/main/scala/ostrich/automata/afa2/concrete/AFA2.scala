@@ -858,4 +858,25 @@ case class AFA2(initialStates : Seq[Int],
           StepTransition(l, _, _) <- ts.iterator)
     yield l).toSet.toIndexedSeq.sorted
 
+  def prettyPrint(): String = {
+    val res = new mutable.StringBuilder()
+
+    res.append("Initial: " + initialStates + "\n")
+    res.append("Final:   " + finalStates + "\n")
+
+    for ((source, ts) <- transitions) {
+      for (t <- ts) {
+        res.append(
+          source + " --" +
+            t.label + "," +
+            (if (t.step == Right) "R" else "L") +
+            "--> " +
+            t.targets.mkString("{", ", ", "}") +
+            "\n"
+        )
+      }
+    }
+
+    res.toString()
+  }
 }

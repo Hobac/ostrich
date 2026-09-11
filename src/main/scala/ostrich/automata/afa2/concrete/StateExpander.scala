@@ -34,6 +34,7 @@ package ostrich.automata.afa2.concrete
 
 import ostrich.automata.afa2.{Step, Left, Right, StepTransition}
 
+/** Can convert more 2AFA then StateDuplicator, but might produce bigger automata. */
 object AFA2StateExpander {
 
   def apply(aut: AFA2): AFA2 = {
@@ -41,11 +42,36 @@ object AFA2StateExpander {
       aut.rlStates ++ aut.rrStates ++ aut.rfStates) {
       aut
     } else {
-      optimize(construct(aut, aut.letters))
+      construct(aut, aut.letters)
     }
   }
 
   def construct(aut: AFA2, alphabet: Seq[Int]): AFA2 = {
+    assert(aut.initialStates.nonEmpty, "2AFA must have at least one initial state")
+    assert(aut.finalStates.nonEmpty, "2AFA must have at least one final state")
+    assert(alphabet.nonEmpty, "Alphabet must not be empty")
+    assert((aut.initialStates.toSet & aut.finalStates.toSet).isEmpty, "Initial and final states must be disjoint")
+    assert(
+      aut.initialStates.forall { state =>
+        val outgoing = aut.transitions.getOrElse(state, Seq())
+        outgoing.nonEmpty && outgoing.forall(_.step == Right)
+      },
+      "Initial states must have at least one outgoing transition and all outgoing transitions must move right"
+    )
+    assert(
+      aut.finalStates.forall { state =>
+        val incoming =
+          for {
+            (_, transitions) <- aut.transitions.toSeq
+            transition <- transitions
+            if transition.targets.contains(state)
+          } yield transition
+
+        incoming.nonEmpty && incoming.forall(_.step == Right)
+      },
+      "Final states must have at least one incoming transition and all incoming transitions must move right"
+    )
+
     var newInitialStates = Seq[Int]()
     var newFinalStates = Seq[Int]()
     var newTransitions = Map[Int, Seq[StepTransition]]()
@@ -55,11 +81,13 @@ object AFA2StateExpander {
 
     // decide which states need expansion
     // a state can stay unchanged if it is already in exactly one S2AFA category
+    // inital and final states allways need to be expanded
     val alreadyCategorizedStates =
       aut.irStates ++ aut.llStates ++ aut.lrStates ++
         aut.rlStates ++ aut.rrStates ++ aut.rfStates
 
-    val statesToExpand = aut.states.filter(state => !alreadyCategorizedStates.contains(state)).toSet
+    val statesToExpand = aut.states.filter(state => !alreadyCategorizedStates.contains(state)).toSet ++
+      aut.initialStates ++ aut.finalStates
 
     // OPTIMIZATION: Only expand the states that need to be expanded
     def isExpanded(state: Int): Boolean = {
@@ -179,12 +207,10 @@ object AFA2StateExpander {
 
     // add a simulated epsilon transition to the fresh final state
     // from the ll copy of all old final states
+    // but only if the old final state was expanded,
+    // otherwise drop the fresh final and use the old as final
     for (oldFinalState <- aut.finalStates) {
-      if (isExpanded(oldFinalState)) {
-        addSecondCaseSimulatedEpsilon(ll(oldFinalState), freshFinalState)
-      } else {
-        newFinalStates = newFinalStates :+ oldFinalState
-      }
+      addSecondCaseSimulatedEpsilon(ll(oldFinalState), freshFinalState)
     }
 
     // === INITIAL STATES ===
@@ -193,26 +219,11 @@ object AFA2StateExpander {
     newInitialStates = Seq(freshInitialState)
 
     // add a simulated epsilon transition from the fresh initial state
-    // to the lr copy of the old inital states
+    // to the lr copies of the old inital states
     for (oldInitialState <- aut.initialStates) {
-      if (isExpanded(oldInitialState)) {
-        addFirstCaseSimulatedEpsilon(freshInitialState, lr(oldInitialState))
-      } else {
-        newInitialStates = newInitialStates :+ oldInitialState
-      }
+      addFirstCaseSimulatedEpsilon(freshInitialState, lr(oldInitialState))
     }
 
-    new AFA2(newInitialStates, newFinalStates, newTransitions).restrictToReachableStates
-  }
-
-  def optimize(aut: AFA2): AFA2 = {
-    return aut
-
-    var newInitialStates = Seq[Int]()
-    var newFinalStates = Seq[Int]()
-    var newTransitions = Map[Int, Seq[StepTransition]]()
-
-
-    new AFA2(newInitialStates, newFinalStates, newTransitions).restrictToReachableStates
+    AFA2(newInitialStates, newFinalStates, newTransitions).restrictToReachableStates
   }
 }

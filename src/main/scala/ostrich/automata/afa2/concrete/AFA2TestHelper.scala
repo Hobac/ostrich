@@ -3,9 +3,57 @@ package ostrich.automata.afa2.concrete
 import ostrich.automata.afa2.symbolic.{SymbEpsReducer, SymbToConcTranslator}
 import ostrich.automata.{ECMAToSymbAFA2, Regex2Aut}
 import ostrich.{ECMARegexParser, OFlags, OstrichStringTheory}
-import ostrich.automata.afa2.{Right, StepTransition}
+import ostrich.automata.afa2.{Right, Left, Step, StepTransition}
 
 object AFA2TestHelper  {
+  /** Might also generate a smaller automaton then stateCount! */
+  def superRandomAFA2(
+                  seed: Long,
+                  stateCount: Int,
+                  maxTargetCount: Int = 2,
+                  maxTransitionsPerState: Int = 2,
+                  universalProbability: Double = 0.2,
+                  leftProbability: Double = 0.2,
+                  alphabet: IndexedSeq[Int] = Vector('a'.toInt, 'b'.toInt)
+                ): AFA2 = {
+
+    val random = new scala.util.Random(seed)
+
+    val initialStates = Seq(0)
+    val finalStates = Seq(stateCount - 1)
+
+    var transitions = Map[Int, Seq[StepTransition]]()
+
+    for (state <- 0 until stateCount) {
+      var outgoingTransitions = Seq[StepTransition]()
+      val transitionCount = random.nextInt(maxTransitionsPerState)
+
+      for (_ <- 0 until transitionCount) {
+        val label = alphabet(random.nextInt(alphabet.size))
+        val direction: Step = if (random.nextDouble() < leftProbability) Left else Right
+        val targetCount =
+          if (random.nextDouble() < universalProbability)
+            2 + random.nextInt(maxTargetCount - 1)
+          else
+            1
+
+        val targets = Seq.fill(targetCount)(random.nextInt(stateCount)).distinct
+        outgoingTransitions :+= StepTransition(
+          label,
+          direction,
+          targets
+        )
+      }
+
+      transitions += state -> outgoingTransitions
+    }
+
+    // force one transition to make the initial and final state valid
+    transitions += 0 -> Seq(StepTransition(alphabet(0), Right, Seq(stateCount - 1)))
+
+    AFA2(initialStates, finalStates, transitions).restrictToReachableStates
+  }
+
   // get a random 2AFA
   // we only use right-transitions
   // this avoids looping
