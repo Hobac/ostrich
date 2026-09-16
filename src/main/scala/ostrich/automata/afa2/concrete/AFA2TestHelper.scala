@@ -6,7 +6,7 @@ import ostrich.{ECMARegexParser, OFlags, OstrichStringTheory}
 import ostrich.automata.afa2.{Right, Left, Step, StepTransition}
 
 object AFA2TestHelper  {
-  /** Might also generate a smaller automaton then stateCount! */
+  /** Might also generate a smaller automaton than stateCount! */
   def superRandomAFA2(
                   seed: Long,
                   stateCount: Int,
@@ -19,6 +19,7 @@ object AFA2TestHelper  {
 
     val random = new scala.util.Random(seed)
 
+    // one inital and one final state
     val initialStates = Seq(0)
     val finalStates = Seq(stateCount - 1)
 
@@ -30,14 +31,27 @@ object AFA2TestHelper  {
 
       for (_ <- 0 until transitionCount) {
         val label = alphabet(random.nextInt(alphabet.size))
-        val direction: Step = if (random.nextDouble() < leftProbability) Left else Right
+
+        // no outgoing left transition from inital state
+        val direction: Step = if (state != 0 && random.nextDouble() < leftProbability) Left else Right
         val targetCount =
           if (random.nextDouble() < universalProbability)
             2 + random.nextInt(maxTargetCount - 1)
           else
             1
 
-        val targets = Seq.fill(targetCount)(random.nextInt(stateCount)).distinct
+        // Left transitions may not enter a final state
+        val possibleTargets =
+          if (direction == Left)
+            (0 until stateCount - 1)
+          else
+            (0 until stateCount)
+
+        val targets =
+          Seq.fill(targetCount)(
+            possibleTargets(random.nextInt(possibleTargets.size))
+          ).distinct
+
         outgoingTransitions :+= StepTransition(
           label,
           direction,
